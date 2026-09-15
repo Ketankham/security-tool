@@ -1,9 +1,25 @@
-"""Persona sessions, AI-assisted LoginRecipe recording + deterministic
-replay, session & access oracles. Roadmap: M1.
-
-Not yet implemented — this package exists so the workspace, imports, and CI
-wiring are correct from day one (docs/05-v1-roadmap.md, M0 exit criteria).
-Implementation lands on the milestone named above.
+"""Persona sessions: AI-assisted LoginRecipe recording (M2) + deterministic
+replay (this milestone), session oracle (docs/01 §6.5), and the
+PersonaSession bridge into sentinel_core.http_engine.
 """
 
-__version__ = "0.1.0"
+from .browser import chromium_launch_kwargs
+from .models import Credential, LoginRecipe, LoginReplayResult, LoginStep, SuccessAssertion
+from .oracle import OracleEstablishmentResult, SessionOracle, establish_session_oracle
+from .persona_session import PersonaSession
+from .replay import LoginReplayer, new_browser
+
+__all__ = [
+    "LoginRecipe",
+    "LoginStep",
+    "SuccessAssertion",
+    "LoginReplayResult",
+    "Credential",
+    "LoginReplayer",
+    "new_browser",
+    "PersonaSession",
+    "SessionOracle",
+    "OracleEstablishmentResult",
+    "establish_session_oracle",
+    "chromium_launch_kwargs",
+]

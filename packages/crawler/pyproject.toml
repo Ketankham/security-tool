@@ -5,6 +5,7 @@ description = "Multi-persona authenticated crawler (Playwright) + JS endpoint ex
 requires-python = ">=3.11"
 dependencies = [
     "sentinel-core",
+    "playwright>=1.45",
 ]
 
 [build-system]

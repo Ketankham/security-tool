@@ -51,6 +51,9 @@ jobs:
       - name: Sync workspace
         run: uv sync --all-packages
 
+      - name: Install Playwright Chromium
+        run: uv run --package sentinel-auth playwright install --with-deps chromium
+
       - name: Licence check (blocks GPL/AGPL — see ADR-0002)
         run: uv run python infra/scripts/licence_check.py
 

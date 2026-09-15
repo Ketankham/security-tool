@@ -1,10 +1,24 @@
-"""LLMClient abstraction (Anthropic primary), model routing, prompt
-templates, per-scan token budget enforcement, golden-set evals.
-Roadmap: M0-M2 (ADR-0001).
-
-Not yet implemented — this package exists so the workspace, imports, and CI
-wiring are correct from day one (docs/05-v1-roadmap.md, M0 exit criteria).
-Implementation lands on the milestone named above.
+"""LLMClient abstraction (ADR-0001): structured-output-only calls, model
+routing (Opus/Sonnet/Haiku by tier), and per-scan token budget enforcement
+with graceful degradation. The Anthropic SDK itself is imported only in
+factory.py — everything else depends solely on the MessagesAPI protocol.
 """
 
-__version__ = "0.1.0"
+from .budget import BudgetExhaustedError, TokenBudget
+from .client import LLMClient, MessagesAPI
+from .factory import make_llm_client
+from .models import ModelTier, StructuredCallResult, TokenUsage
+from .routing import DEFAULT_MODEL_IDS, DEGRADE_TIER
+
+__all__ = [
+    "LLMClient",
+    "MessagesAPI",
+    "make_llm_client",
+    "TokenBudget",
+    "BudgetExhaustedError",
+    "ModelTier",
+    "StructuredCallResult",
+    "TokenUsage",
+    "DEFAULT_MODEL_IDS",
+    "DEGRADE_TIER",
+]
