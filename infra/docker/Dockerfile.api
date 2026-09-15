@@ -1,0 +1,26 @@
+# Built from the repo root: docker build -f infra/docker/Dockerfile.api .
+# (needs the whole uv workspace as context — apps/api depends on the
+# in-repo sentinel-core and sentinel-db packages via path sources).
+FROM python:3.11-slim AS base
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /uvx /usr/local/bin/
+
+WORKDIR /app
+
+# Copy the whole workspace — uv needs every member's pyproject.toml to
+# resolve path dependencies, and this stays small (no Playwright/browser
+# binaries live in the API image).
+COPY pyproject.toml uv.lock ./
+COPY apps/api ./apps/api
+COPY packages ./packages
+
+RUN uv sync --frozen --package sentinel-api --no-dev
+
+ENV PATH="/app/.venv/bin:${PATH}"
+EXPOSE 8000
+
+CMD ["uvicorn", "sentinel_api_app.main:app", "--app-dir", "apps/api", "--host", "0.0.0.0", "--port", "8000"]

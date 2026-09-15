@@ -1,5 +1,19 @@
-"""Async engine/session factory. Use ``get_session`` as a FastAPI dependency
-or ``session_scope`` as a plain async context manager in Celery tasks."""
+"""Async engine/session factory.
+
+Three ways to get a session, for three different shapes of caller:
+
+- ``get_session`` — FastAPI dependency (``Depends(get_session)``). No
+  implicit transaction; each route commits explicitly when it's done.
+- ``session_scope`` — a *single* atomic unit of work: opens one transaction,
+  commits on clean exit, rolls back on exception. Right for a short script
+  or a one-shot task.
+- ``open_session`` — a plain session with *no* implicit transaction, for
+  callers (like the worker's multi-phase scan runner) that need several
+  independent commits across one long-lived task. Using ``session_scope``
+  there would be wrong: its enclosing ``session.begin()`` only expects to
+  commit once, and an explicit ``session.commit()`` partway through leaves
+  it holding a stale, already-closed transaction handle.
+"""
 
 from __future__ import annotations
 
@@ -46,7 +60,18 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 @asynccontextmanager
 async def session_scope() -> AsyncIterator[AsyncSession]:
-    """Plain async context manager for Celery tasks / scripts."""
+    """A single atomic unit of work: one transaction, committed once on
+    clean exit. See module docstring — do not call ``session.commit()``
+    yourself inside this block; use ``open_session`` if you need to."""
     factory = _get_default_factory()
     async with factory() as session, session.begin():
+        yield session
+
+
+@asynccontextmanager
+async def open_session() -> AsyncIterator[AsyncSession]:
+    """A plain session with no implicit transaction — the caller commits
+    (possibly several times) explicitly. See module docstring."""
+    factory = _get_default_factory()
+    async with factory() as session:
         yield session

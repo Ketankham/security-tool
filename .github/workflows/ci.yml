@@ -59,16 +59,15 @@ jobs:
 
       - name: mypy
         run: uv run mypy apps packages
-        continue-on-error: true  # tightened once packages beyond core/db/api fill in
 
       - name: Run DB migrations
         run: uv run --package sentinel-db alembic -c packages/db/alembic.ini upgrade head
 
       - name: Unit tests
-        run: uv run pytest tests/unit packages/*/tests apps/*/tests -m "not integration" -v
+        run: uv run pytest -m "not integration" -v
 
       - name: Integration tests
-        run: uv run pytest tests/integration -m integration -v
+        run: uv run pytest -m integration -v
 
   container-build:
     runs-on: ubuntu-latest

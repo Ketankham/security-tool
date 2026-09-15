@@ -62,6 +62,13 @@ ignore = [
               # (docs/03 severity strings, API responses) that we keep this.
 ]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency injection idiom *is* `Depends(...)` in an argument
+# default — that's not the mutable-default footgun B008 exists to catch.
+extend-immutable-calls = [
+    "fastapi.Depends", "fastapi.Header", "fastapi.Query", "fastapi.Path", "fastapi.Body",
+]
+
 [tool.mypy]
 python_version = "3.11"
 ignore_missing_imports = true
@@ -72,6 +79,12 @@ explicit_package_bases = true
 [tool.pytest.ini_options]
 testpaths = ["apps", "packages", "tests/unit", "tests/integration"]
 asyncio_mode = "auto"
+# Several packages each have their own tests/ (and tests/__init__.py, and a
+# conftest.py) — the default "prepend" import mode resolves those to
+# colliding top-level `tests` / `conftest` module names when more than one
+# is collected in the same run. importlib mode gives each file a name
+# derived from its own path instead, which is what a monorepo needs.
+addopts = "--import-mode=importlib"
 markers = [
     "integration: requires live Postgres/Redis (see `make up`); skipped automatically if unreachable",
 ]

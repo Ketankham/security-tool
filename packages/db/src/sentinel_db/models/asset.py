@@ -30,6 +30,12 @@ class Asset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )  # app | api | admin | marketing | unknown
     tech_fingerprint: Mapped[list[str]] = mapped_column(JSONB, default=list)
 
+    # Populated by Phase 1 recon (sentinel_recon.ReconResult) — resolved IPs
+    # and the raw HTTP probe records (status/title/server/tech per URL).
+    ip_addresses: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    http_probes: Mapped[list[dict]] = mapped_column(JSONB, default=list)
+    discovery_source: Mapped[str] = mapped_column(String(30), default="root_domain")
+
     endpoints: Mapped[list[Endpoint]] = relationship(
         back_populates="asset", cascade="all, delete-orphan"
     )
