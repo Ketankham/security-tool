@@ -64,7 +64,7 @@ jobs:
         run: uv run --package sentinel-db alembic -c packages/db/alembic.ini upgrade head
 
       - name: Unit tests
-        run: uv run pytest -m "not integration" -v
+        run: uv run pytest -m "not integration and not benchmark" -v
 
       - name: Integration tests
         run: uv run pytest -m integration -v

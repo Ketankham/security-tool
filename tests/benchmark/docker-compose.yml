@@ -1,0 +1,48 @@
+# Deliberately-vulnerable app corpus (docs/01-architecture.md §8).
+#
+# Not part of the main dev stack (docker-compose.yml at the repo root) —
+# these are large images pulled only when someone is actually running the
+# benchmark, not on every `make up`.
+#
+#   docker compose -f tests/benchmark/docker-compose.yml up -d
+#
+# Status (docs/05-v1-roadmap.md M0 exit criteria vs. reality): this corpus
+# exists to measure the detection/false-positive rate of the authz,
+# injection, and session-management engines (docs/03-check-catalogue.md).
+# Those engines are not built yet — only Phase 1 (recon) is real as of this
+# commit (packages/recon). Running the smoke test in this directory today
+# only proves recon can reach these apps; it is not yet a false-positive
+# benchmark, because there is nothing generating findings to measure.
+# Wire in the real benchmark (detection rate, FP rate, run-to-run variance
+# — see docs/01 §8) once the authz/checks/verifier packages land (M2).
+
+name: sentinel-benchmark
+
+services:
+  juice-shop:
+    image: bkimminich/juice-shop:latest
+    ports:
+      - "3000:3000"
+
+  crapi-identity:
+    # crAPI is a multi-container app (identity/community/workshop services
+    # + Mailhog + Postgres/Mongo). Its own compose file is the source of
+    # truth for the full topology — see:
+    # https://github.com/OWASP/crAPI/blob/main/deploy/docker/docker-compose.yml
+    # Referenced here as a placeholder service name so `docker compose ps`
+    # in this file at least shows intent; replace with an `include:` of
+    # crAPI's own compose file once actually running this benchmark.
+    image: crapi/crapi-identity:latest
+    profiles: ["crapi"]  # not started by default `up`; opt in explicitly
+
+  vampi:
+    image: erev0s/vampi:latest
+    environment:
+      VULNERABLE: "1"
+    ports:
+      - "5002:5000"
+
+  # TODO (docs/01 §8, docs/05 M2): our own purpose-built multi-tenant SaaS
+  # fixture, with deliberately-planted IDORs *and* known-correct endpoints
+  # that must never be flagged. No public vulnerable app provides the
+  # "known-good" half of that measurement — see tests/benchmark/fixtures/.

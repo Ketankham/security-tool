@@ -87,4 +87,5 @@ asyncio_mode = "auto"
 addopts = "--import-mode=importlib"
 markers = [
     "integration: requires live Postgres/Redis (see `make up`); skipped automatically if unreachable",
+    "benchmark: requires the vulnerable-app corpus (see tests/benchmark/docker-compose.yml); not run by default",
 ]
