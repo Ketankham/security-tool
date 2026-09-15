@@ -1,0 +1,77 @@
+[project]
+name = "security-tool-workspace"
+version = "0.0.0"
+requires-python = ">=3.11"
+
+[tool.uv.workspace]
+members = [
+    "apps/api",
+    "apps/worker",
+    "packages/core",
+    "packages/db",
+    "packages/recon",
+    "packages/crawler",
+    "packages/auth",
+    "packages/checks",
+    "packages/nuclei",
+    "packages/verifier",
+    "packages/triage",
+    "packages/reporter",
+    "packages/integrations",
+    "packages/ai",
+]
+
+[tool.uv.sources]
+sentinel-core = { workspace = true }
+sentinel-db = { workspace = true }
+sentinel-recon = { workspace = true }
+sentinel-crawler = { workspace = true }
+sentinel-auth = { workspace = true }
+sentinel-checks = { workspace = true }
+sentinel-nuclei = { workspace = true }
+sentinel-verifier = { workspace = true }
+sentinel-triage = { workspace = true }
+sentinel-reporter = { workspace = true }
+sentinel-integrations = { workspace = true }
+sentinel-ai = { workspace = true }
+
+# Centralised dev tooling for the whole workspace, installed by `uv sync`
+# (uv includes the "dev" group by default; `--no-dev` opts out). Individual
+# packages declare their own runtime deps only.
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "fakeredis>=2.23",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "httpx>=0.27",
+    "respx>=0.21",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["apps", "packages"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    "UP042",  # `class X(str, Enum)` is deliberate: SQLAlchemy/JSON serialise
+              # it as a plain string; enum.StrEnum's repr/format differ enough
+              # (docs/03 severity strings, API responses) that we keep this.
+]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = true
+namespace_packages = true
+explicit_package_bases = true
+
+[tool.pytest.ini_options]
+testpaths = ["apps", "packages", "tests/unit", "tests/integration"]
+asyncio_mode = "auto"
+markers = [
+    "integration: requires live Postgres/Redis (see `make up`); skipped automatically if unreachable",
+]

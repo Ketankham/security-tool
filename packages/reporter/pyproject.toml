@@ -1,0 +1,15 @@
+[project]
+name = "sentinel-reporter"
+version = "0.1.0"
+description = "AI narrative + deterministic data -> dashboard, PDF, SARIF, attestation letters. Roadmap: M3."
+requires-python = ">=3.11"
+dependencies = [
+    "sentinel-core",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sentinel_reporter"]

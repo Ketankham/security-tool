@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sentinel
+          POSTGRES_PASSWORD: sentinel
+          POSTGRES_DB: sentinel
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sentinel"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel
+      DATABASE_URL_SYNC: postgresql+psycopg://sentinel:sentinel@localhost:5432/sentinel
+      REDIS_URL: redis://localhost:6379/0
+      KMS_MASTER_KEY: MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI9
+      API_SECRET_KEY: ci-only-not-a-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.8.17"
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Sync workspace
+        run: uv sync --all-packages
+
+      - name: Licence check (blocks GPL/AGPL — see ADR-0002)
+        run: uv run python infra/scripts/licence_check.py
+
+      - name: Ruff lint
+        run: uv run ruff check apps packages
+
+      - name: mypy
+        run: uv run mypy apps packages
+        continue-on-error: true  # tightened once packages beyond core/db/api fill in
+
+      - name: Run DB migrations
+        run: uv run --package sentinel-db alembic -c packages/db/alembic.ini upgrade head
+
+      - name: Unit tests
+        run: uv run pytest tests/unit packages/*/tests apps/*/tests -m "not integration" -v
+
+      - name: Integration tests
+        run: uv run pytest tests/integration -m integration -v
+
+  container-build:
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build API image
+        run: docker build -f infra/docker/Dockerfile.api -t sentinel-api:ci .
+      - name: Build worker image
+        run: docker build -f infra/docker/Dockerfile.worker -t sentinel-worker:ci .
