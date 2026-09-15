@@ -7,6 +7,8 @@ dependencies = [
     "sentinel-core",
     "sentinel-db",
     "sentinel-recon",
+    "sentinel-auth",
+    "sentinel-crawler",
     "celery[redis]>=5.4",
     "structlog>=24.1",
 ]

@@ -174,6 +174,41 @@ async def test_persona_credential_is_never_returned(client):
     assert "credential" not in body
     assert "hunter2" not in resp.text
     assert body["trust_rank"] == 10
+    assert body["has_login_recipe"] is False
+
+
+async def test_persona_with_login_recipe_is_stored_but_never_echoed_back(client):
+    org = await _create_org(client, slug="loginrecipeorg")
+    headers = _auth_headers(org["id"])
+    target = (
+        await client.post(
+            "/targets", json={"root_domain": "lr.test", "display_name": "LR"}, headers=headers
+        )
+    ).json()
+
+    resp = await client.post(
+        f"/targets/{target['id']}/personas",
+        json={
+            "label": "Member",
+            "role_name": "member",
+            "credential": {"kind": "password", "secret": "hunter2"},
+            "login_recipe": {
+                "start_url": "https://lr.test/login",
+                "steps": [
+                    {"action": "fill", "selector": "#u", "value": "alice"},
+                    {"action": "fill_secret", "selector": "#p", "credential_ref": "pw"},
+                    {"action": "click", "selector": "button"},
+                ],
+                "success_assertion": {"kind": "url_contains", "value": "/dashboard"},
+            },
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["has_login_recipe"] is True
+    assert "login_recipe" not in body
+    assert "start_url" not in resp.text
 
 
 async def test_cross_org_cannot_read_another_orgs_target_or_scan(client, no_dispatch):

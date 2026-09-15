@@ -45,6 +45,7 @@ async def create_persona(
         tenant_key=payload.tenant_key,
         login_strategy=payload.login_strategy,
         credential_id=credential_id,
+        login_recipe=payload.login_recipe.model_dump() if payload.login_recipe else None,
         expected_denied=payload.expected_denied,
     )
     session.add(persona)

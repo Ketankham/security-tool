@@ -1838,7 +1838,9 @@ version = "0.1.0"
 source = { editable = "apps/worker" }
 dependencies = [
     { name = "celery", extra = ["redis"] },
+    { name = "sentinel-auth" },
     { name = "sentinel-core" },
+    { name = "sentinel-crawler" },
     { name = "sentinel-db" },
     { name = "sentinel-recon" },
     { name = "structlog" },
@@ -1847,7 +1849,9 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "celery", extras = ["redis"], specifier = ">=5.4" },
+    { name = "sentinel-auth", editable = "packages/auth" },
     { name = "sentinel-core", editable = "packages/core" },
+    { name = "sentinel-crawler", editable = "packages/crawler" },
     { name = "sentinel-db", editable = "packages/db" },
     { name = "sentinel-recon", editable = "packages/recon" },
     { name = "structlog", specifier = ">=24.1" },
