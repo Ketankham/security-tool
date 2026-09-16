@@ -233,17 +233,17 @@ Organization ──┬── User (via Clerk, role: owner|admin|member|viewer)
 class Persona:
     id: UUID
     target_id: UUID
-    label: str                  # "Acme admin", "Acme viewer", "Globex member"
-    role_name: str              # customer's own name for the role
-    trust_rank: int             # 0 = anonymous, higher = more privileged.
-                                # Drives the vertical-escalation matrix.
-    tenant_key: str | None      # personas sharing a tenant_key are in the same
-                                # tenant; differing keys are a horizontal boundary
+    label: str  # "Acme admin", "Acme viewer", "Globex member"
+    role_name: str  # customer's own name for the role
+    trust_rank: int  # 0 = anonymous, higher = more privileged.
+    # Drives the vertical-escalation matrix.
+    tenant_key: str | None  # personas sharing a tenant_key are in the same
+    # tenant; differing keys are a horizontal boundary
     credential_id: UUID | None  # encrypted; never enters an LLM prompt
-    login_recipe: LoginRecipe   # recorded, replayable steps (see §6.4)
-    session_state: bytes        # Playwright storage_state, encrypted, TTL'd
-    session_oracle: Oracle      # how we know the session is still alive (§6.5)
-    canary_tokens: list[str]    # unique strings seeded into this persona's data
+    login_recipe: LoginRecipe  # recorded, replayable steps (see §6.4)
+    session_state: bytes  # Playwright storage_state, encrypted, TTL'd
+    session_oracle: Oracle  # how we know the session is still alive (§6.5)
+    canary_tokens: list[str]  # unique strings seeded into this persona's data
     expected_denied: list[str]  # customer-declared "this role must never reach X"
 ```
 
@@ -268,12 +268,12 @@ plus anonymous. That's the whole engine, expressed in two fields.
 ```python
 class LoginRecipe:
     strategy: Literal["form", "oauth_redirect", "saml", "api_token", "har_replay", "manual_session"]
-    steps: list[Step]        # goto / fill / click / wait_for / solve_totp / read_email_link
+    steps: list[Step]  # goto / fill / click / wait_for / solve_totp / read_email_link
     totp_secret_ref: str | None
-    email_inbox_ref: str | None     # for magic links — a mailbox we control per persona
-    success_assertion: Assertion    # what proves login worked
+    email_inbox_ref: str | None  # for magic links — a mailbox we control per persona
+    success_assertion: Assertion  # what proves login worked
     max_duration_s: int
-    version: int                    # bumped when re-recorded after a UI change
+    version: int  # bumped when re-recorded after a UI change
 ```
 
 Recorded interactively (AI-assisted) at onboarding, then executed deterministically on every
@@ -300,19 +300,23 @@ two kinds:
 class Finding:
     id: UUID
     scan_id: UUID
-    fingerprint: str            # stable hash for dedup across scans: (rule, endpoint_template, param, persona_pair)
-    rule_id: str                # "authz.horizontal.idor", "session.no_invalidation_on_logout"
+    fingerprint: (
+        str  # stable hash for dedup across scans: (rule, endpoint_template, param, persona_pair)
+    )
+    rule_id: str  # "authz.horizontal.idor", "session.no_invalidation_on_logout"
     title: str
     cwe: list[int]
-    owasp_top10: str            # "A01:2021"
+    owasp_top10: str  # "A01:2021"
     cvss_vector: str
-    severity: Literal["critical","high","medium","low","info"]
-    confidence: Literal["confirmed","probable","informational"]  # "confirmed" REQUIRES a passing Verification
-    status: Literal["open","fixed","regressed","accepted_risk","false_positive"]
+    severity: Literal["critical", "high", "medium", "low", "info"]
+    confidence: Literal[
+        "confirmed", "probable", "informational"
+    ]  # "confirmed" REQUIRES a passing Verification
+    status: Literal["open", "fixed", "regressed", "accepted_risk", "false_positive"]
     evidence_transcript_ids: list[str]
-    reproduction: ReproSteps    # includes a copy-pasteable curl
-    narrative: str              # AI-written, expert-reviewable
-    remediation: Remediation    # framework-aware fix guidance
+    reproduction: ReproSteps  # includes a copy-pasteable curl
+    narrative: str  # AI-written, expert-reviewable
+    remediation: Remediation  # framework-aware fix guidance
     first_seen_scan_id: UUID
     last_seen_scan_id: UUID
     verification: Verification | None
