@@ -34,7 +34,12 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel
       DATABASE_URL_SYNC: postgresql+psycopg://sentinel:sentinel@localhost:5432/sentinel
       REDIS_URL: redis://localhost:6379/0
-      KMS_MASTER_KEY: MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI9
+      # CI-only test key (not a production secret) — must be a valid Fernet
+      # key: urlsafe-base64-encoded 32 raw bytes, e.g. via
+      # `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+      # A base64-encoded arbitrary string is NOT valid here; it must decode
+      # to exactly 32 bytes.
+      KMS_MASTER_KEY: CdxGT5SGJec4JFxiTg5aCyVeph5a2eq6RftjyER5SV0=
       API_SECRET_KEY: ci-only-not-a-secret
 
     steps:
