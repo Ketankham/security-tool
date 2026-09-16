@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .routers import findings, health, organizations, personas, scans, targets
+from .routers import findings, health, organizations, personas, quick_scan, reports, scans, targets
 
 
 def create_app() -> FastAPI:
@@ -21,6 +21,8 @@ def create_app() -> FastAPI:
     app.include_router(personas.router)
     app.include_router(scans.router)
     app.include_router(findings.router)
+    app.include_router(reports.router)
+    app.include_router(quick_scan.router)
 
     @app.exception_handler(RuntimeError)
     async def runtime_error_handler(request: Request, exc: RuntimeError) -> JSONResponse:

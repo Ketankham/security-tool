@@ -4,12 +4,24 @@ after every step so a crashed worker resumes rather than restarts
 (docs/01-architecture.md §5).
 
 M1 scope (docs/05-v1-roadmap.md): SCOPE_VERIFYING, RECON, AUTH_ESTABLISHING,
-CRAWLING, and SURFACE_MAPPING are real. Every phase after that — the
-parallel TESTING phases (injection/authz/session/business-logic), verify,
-triage, report — is not implemented yet, so this orchestrator stops there,
-honestly: it transitions the scan to PAUSED (not COMPLETE, and not a fake
-success) with a clear degraded_reasons note, rather than claiming a
-finished scan that never ran a single check (docs/04-edge-cases.md §G).
+CRAWLING, and SURFACE_MAPPING.
+
+M2 scope (this milestone): of the parallel TESTING phases, only
+ACCESS_CONTROL is real — the authorization engine's three boundaries
+(vertical/horizontal/anonymous, docs/03 §4.1) plus the Phase 9 verification
+gate. ACTIVE_INJECTION, SESSION_CHECKS, and BUSINESS_LOGIC are marked
+SKIPPED (M3, M2-follow-up, and v1.5 respectively). PASSIVE_CHECKS is also
+SKIPPED (M3 breadth). TRIAGING is minimal (fingerprint assignment only — no
+cross-scan dedup/regression detection or CVSS/clustering yet). REPORTING
+produces a ScanReport (recon/surface/findings summary — see
+sentinel_reporter) scoped to what actually ran; PDF, SARIF, the AI-written
+narrative, and the attestation letter are M3/Verified-tier work.
+
+A scan that reaches here genuinely completes (ScanState.COMPLETE) —
+whatever it found (or honestly didn't check yet, per its own
+degraded_reasons and the report's scope_note) rather than claiming a scan
+that never ran a single check (docs/04-edge-cases.md §G's spirit, now
+satisfied by finishing instead of pausing).
 """
 
 from __future__ import annotations
@@ -27,24 +39,47 @@ from sentinel_core.rate_limiter import RateLimiter
 from sentinel_core.state_machine import PhaseStatus, ScanPhaseName, ScanState, ScanStateMachine
 from sentinel_crawler import PersonaCrawler, SurfaceMap
 from sentinel_db import open_session
-from sentinel_db.models import Asset, Organization, Persona, Scan, ScanPhase, ScopeRule, Target
+from sentinel_db.models import (
+    Asset,
+    Finding,
+    Organization,
+    Persona,
+    Scan,
+    ScanPhase,
+    ScopeRule,
+    Target,
+    TranscriptRecord,
+)
 from sentinel_recon import run_recon
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from .access_control_adapter import AccessControlStats, run_access_control_and_verify
 from .auth_adapter import establish_persona
 from .config import Settings, get_settings
-from .substrate import build_http_engine, build_scope_guard
+from .report_adapter import build_scan_report, persist_report
+from .substrate import build_http_engine, build_report_store, build_scope_guard
 from .surface_adapter import merge_surface_map
 
 log = structlog.get_logger(__name__)
 
-NOT_YET_IMPLEMENTED_NOTE = (
-    "Paused after surface mapping — the check engines (injection, authz, "
-    "session, business-logic) and everything past them are not implemented "
-    "yet (see docs/05-v1-roadmap.md milestones M2-M3). This scan can be "
-    "resumed once they land; it is not stuck or broken."
+SKIPPED_PASSIVE_CHECKS_NOTE = (
+    "Passive/config checks (headers, cookies, CORS, TLS, nuclei) are not "
+    "implemented yet — M3 breadth work (docs/05-v1-roadmap.md)."
+)
+SKIPPED_ACTIVE_INJECTION_NOTE = (
+    "Active injection testing (XSS, SQLi, SSTI, SSRF, ...) is not "
+    "implemented yet — M3 (docs/05-v1-roadmap.md)."
+)
+SKIPPED_SESSION_CHECKS_NOTE = (
+    "Session-management checks (logout invalidation, JWT, CSRF, ...) are "
+    "not implemented yet — an M2 follow-up slice (docs/03-check-catalogue.md "
+    "§5)."
+)
+SKIPPED_BUSINESS_LOGIC_NOTE = (
+    "Business-logic testing is deliberately out of v1 scope — human/"
+    "Verified-tier only (docs/05-v1-roadmap.md)."
 )
 
 
@@ -198,6 +233,41 @@ async def _run_crawling(
             )
         )
     return surfaces
+
+
+async def _run_access_control(
+    *,
+    scan: Scan,
+    target: Target,
+    scope_rules: list[ScopeRule],
+    surfaces: list[SurfaceMap],
+    personas: list[Persona],
+    in_memory_sessions: dict[str, dict],
+    settings: Settings,
+    redis_client: Redis,
+    target_host: str | None = None,
+) -> tuple[AccessControlStats, list[Finding], list[TranscriptRecord]]:
+    """``target_host`` defaults to the target's own root domain; tests pass
+    an explicit one — see _run_auth_establishing's docstring for why."""
+    scope_guard = build_scope_guard(target, scope_rules)
+    engine = build_http_engine(
+        scope_guard=scope_guard,
+        redis_client=redis_client,
+        settings=settings,
+        target_id=str(target.id),
+        scan_id=str(scan.id),
+    )
+    try:
+        return await run_access_control_and_verify(
+            scan=scan,
+            target_host=target_host or target.root_domain,
+            surfaces=surfaces,
+            personas=personas,
+            in_memory_sessions=in_memory_sessions,
+            http_engine=engine,
+        )
+    finally:
+        await engine.aclose()
 
 
 async def run_scan(scan_id: str) -> None:
@@ -448,19 +518,160 @@ async def run_scan(scan_id: str) -> None:
                 "assets_created": total_assets,
             },
         )
+        await session.commit()
 
-        # --- Everything past this point is M2+ (docs/05-v1-roadmap.md) ---
-        machine.transition(ScanState.PAUSED)
+        # --- Phase: PASSIVE_CHECKS (SKIPPED — M3 breadth work) ---
+        phase = await _get_or_create_phase(session, scan, ScanPhaseName.PASSIVE_CHECKS)
+        machine.transition(ScanState.PASSIVE_CHECKS)
         scan.state = machine.current
-        scan.paused_from = machine.paused_from
+        await _start_phase(session, phase)
         scan.is_degraded = True
-        scan.degraded_reasons = [*scan.degraded_reasons, NOT_YET_IMPLEMENTED_NOTE]
+        scan.degraded_reasons = [*scan.degraded_reasons, SKIPPED_PASSIVE_CHECKS_NOTE]
+        await _finish_phase(session, phase, status=PhaseStatus.SKIPPED, stats={})
+
+        machine.transition(ScanState.TESTING)
+        scan.state = machine.current
+        await session.commit()
+
+        # --- Phase: ACCESS_CONTROL (the moat — docs/03 §4) ---
+        phase = await _get_or_create_phase(session, scan, ScanPhaseName.ACCESS_CONTROL)
+        await _start_phase(session, phase)
+        await session.commit()
+
+        redis_client = Redis.from_url(settings.redis_url)
+        try:
+            access_control_stats, findings, transcript_records = await _run_access_control(
+                scan=scan,
+                target=target,
+                scope_rules=scope_rules,
+                surfaces=surfaces,
+                personas=personas,
+                in_memory_sessions=in_memory_sessions,
+                settings=settings,
+                redis_client=redis_client,
+            )
+        finally:
+            await redis_client.aclose()
+
+        # transcript_records first: Evidence.transcript_id has a real FK to
+        # them (SQLAlchemy sorts inserts by dependency at flush time
+        # regardless, but this is the actual order the FK requires).
+        session.add_all(transcript_records)
+        session.add_all(findings)
+        await session.flush()
+
+        await _finish_phase(
+            session,
+            phase,
+            status=PhaseStatus.COMPLETED,
+            stats={
+                "observed_requests": access_control_stats.observed_requests,
+                "candidates_found": access_control_stats.candidates_found,
+                "ambiguous_skipped": access_control_stats.ambiguous_skipped,
+                "confirmed": access_control_stats.confirmed,
+                "probable": access_control_stats.probable,
+            },
+        )
+        if access_control_stats.ambiguous_skipped:
+            scan.is_degraded = True
+            scan.degraded_reasons = [
+                *scan.degraded_reasons,
+                f"{access_control_stats.ambiguous_skipped} access-control diff(s) could not be "
+                "confidently judged (Layer 4 LLM adjudication is not implemented yet) and were "
+                "not reported as findings.",
+            ]
+
+        # --- Phases: ACTIVE_INJECTION, SESSION_CHECKS, BUSINESS_LOGIC (SKIPPED) ---
+        for phase_name, note in (
+            (ScanPhaseName.ACTIVE_INJECTION, SKIPPED_ACTIVE_INJECTION_NOTE),
+            (ScanPhaseName.SESSION_CHECKS, SKIPPED_SESSION_CHECKS_NOTE),
+            (ScanPhaseName.BUSINESS_LOGIC, SKIPPED_BUSINESS_LOGIC_NOTE),
+        ):
+            phase = await _get_or_create_phase(session, scan, phase_name)
+            await _start_phase(session, phase)
+            await _finish_phase(session, phase, status=PhaseStatus.SKIPPED, stats={})
+            scan.is_degraded = True
+            scan.degraded_reasons = [*scan.degraded_reasons, note]
+        await session.commit()
+
+        # --- Phase: VERIFYING ---
+        # Verification already ran candidate-by-candidate inside
+        # _run_access_control (Phase 9 is check-agnostic, and each check
+        # engine runs it against its own candidates as it produces them —
+        # docs/02 Phase 9). This phase records that it happened.
+        phase = await _get_or_create_phase(session, scan, ScanPhaseName.VERIFYING)
+        machine.transition(ScanState.VERIFYING)
+        scan.state = machine.current
+        await _start_phase(session, phase)
+        await _finish_phase(
+            session,
+            phase,
+            status=PhaseStatus.COMPLETED,
+            stats={
+                "candidates_verified": access_control_stats.candidates_found,
+                "confirmed": access_control_stats.confirmed,
+                "probable": access_control_stats.probable,
+            },
+        )
+        await session.commit()
+
+        # --- Phase: TRIAGING (minimal — fingerprinting only) ---
+        # Cross-scan dedup/regression detection (FindingStatus transitions
+        # to FIXED/REGRESSED) and CVSS/clustering are not implemented yet —
+        # every finding's fingerprint is assigned (docs/01 §6.6) so a future
+        # slice can add that lookup without a data migration.
+        phase = await _get_or_create_phase(session, scan, ScanPhaseName.TRIAGING)
+        machine.transition(ScanState.TRIAGING)
+        scan.state = machine.current
+        await _start_phase(session, phase)
+        await _finish_phase(
+            session,
+            phase,
+            status=PhaseStatus.COMPLETED,
+            stats={"findings_triaged": len(findings)},
+        )
+        await session.commit()
+
+        # --- Phase: REPORTING ---
+        # Scoped to what actually ran (docs/05-v1-roadmap.md M2 slice 2): a
+        # recon/surface/findings summary. PDF, SARIF, the AI-written
+        # narrative, and the attestation letter are M3/Verified-tier work —
+        # ScanReport.to_dict()'s own scope_note says so in the artifact
+        # itself, not just here.
+        phase = await _get_or_create_phase(session, scan, ScanPhaseName.REPORTING)
+        machine.transition(ScanState.REPORTING)
+        scan.state = machine.current
+        await _start_phase(session, phase)
+
+        report = await build_scan_report(
+            session,
+            scan=scan,
+            target=target,
+            personas_crawled=[s.persona_id for s in surfaces],
+        )
+        report_row = await persist_report(report, scan=scan, store=build_report_store(settings))
+        session.add(report_row)
+        await session.flush()
+
+        await _finish_phase(
+            session,
+            phase,
+            status=PhaseStatus.COMPLETED,
+            stats={"report_id": str(report_row.id), **report.summary},
+        )
+
+        machine.transition(ScanState.COMPLETE)
+        scan.state = machine.current
+        scan.finished_at = datetime.now(UTC)
         await session.commit()
 
         log.info(
-            "scan_runner.paused_after_surface_mapping",
+            "scan_runner.completed",
             scan_id=scan_id,
             assets_found=len(recon_result.assets),
             personas_crawled=len(surfaces),
             endpoints_created=total_created,
+            findings_confirmed=access_control_stats.confirmed,
+            findings_probable=access_control_stats.probable,
+            report_id=str(report_row.id),
         )
