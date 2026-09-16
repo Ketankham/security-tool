@@ -1,0 +1,18 @@
+[project]
+name = "sentinel-recon"
+version = "0.1.0"
+description = "Phase 1 (Discovery & Recon): subfinder/dnsx/httpx/tlsx wrappers with graceful degrade."
+requires-python = ">=3.11"
+dependencies = [
+    "sentinel-core",
+    "httpx>=0.27",
+    "structlog>=24.1",
+    "dnspython>=2.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sentinel_recon"]
