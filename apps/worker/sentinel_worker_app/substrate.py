@@ -10,7 +10,7 @@ from sentinel_core.http_engine import HttpEngine
 from sentinel_core.rate_limiter import RateLimiter
 from sentinel_core.scope_guard import ScopeGuard
 from sentinel_core.scope_guard import ScopeRule as CoreScopeRule
-from sentinel_core.transcript import LocalTranscriptStore, TranscriptRecorder
+from sentinel_core.transcript import LocalTranscriptStore, TranscriptRecorder, TranscriptStore
 from sentinel_db.models import ScopeRule, Target
 
 from .config import Settings
@@ -46,3 +46,12 @@ def build_http_engine(
         target_id=target_id,
         scan_id=scan_id,
     )
+
+
+def build_report_store(settings: Settings) -> TranscriptStore:
+    # Content-addressed blob storage, same mechanism as transcripts (docs/01
+    # §3.1) — just a separate directory/prefix since reports and transcripts
+    # are logically different content. Always local for now, matching
+    # build_http_engine's recorder above: the S3 branch of storage_backend
+    # isn't wired up anywhere yet, not just here.
+    return LocalTranscriptStore(settings.report_local_path)

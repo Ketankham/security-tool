@@ -6,18 +6,22 @@ after every step so a crashed worker resumes rather than restarts
 M1 scope (docs/05-v1-roadmap.md): SCOPE_VERIFYING, RECON, AUTH_ESTABLISHING,
 CRAWLING, and SURFACE_MAPPING.
 
-M2 slice 1 scope (this milestone): of the parallel TESTING phases, only
+M2 scope (this milestone): of the parallel TESTING phases, only
 ACCESS_CONTROL is real — the authorization engine's three boundaries
 (vertical/horizontal/anonymous, docs/03 §4.1) plus the Phase 9 verification
 gate. ACTIVE_INJECTION, SESSION_CHECKS, and BUSINESS_LOGIC are marked
 SKIPPED (M3, M2-follow-up, and v1.5 respectively). PASSIVE_CHECKS is also
 SKIPPED (M3 breadth). TRIAGING is minimal (fingerprint assignment only — no
-cross-scan dedup/regression detection or CVSS/clustering yet).
+cross-scan dedup/regression detection or CVSS/clustering yet). REPORTING
+produces a ScanReport (recon/surface/findings summary — see
+sentinel_reporter) scoped to what actually ran; PDF, SARIF, the AI-written
+narrative, and the attestation letter are M3/Verified-tier work.
 
-Everything past TRIAGING — REPORTING and COMPLETE — is not implemented, so
-this orchestrator stops there, honestly: it transitions the scan to PAUSED
-(not COMPLETE, and not a fake success) with a clear degraded_reasons note,
-rather than claiming a finished scan (docs/04-edge-cases.md §G).
+A scan that reaches here genuinely completes (ScanState.COMPLETE) —
+whatever it found (or honestly didn't check yet, per its own
+degraded_reasons and the report's scope_note) rather than claiming a scan
+that never ran a single check (docs/04-edge-cases.md §G's spirit, now
+satisfied by finishing instead of pausing).
 """
 
 from __future__ import annotations
@@ -54,16 +58,11 @@ from sqlalchemy.orm import selectinload
 from .access_control_adapter import AccessControlStats, run_access_control_and_verify
 from .auth_adapter import establish_persona
 from .config import Settings, get_settings
-from .substrate import build_http_engine, build_scope_guard
+from .report_adapter import build_scan_report, persist_report
+from .substrate import build_http_engine, build_report_store, build_scope_guard
 from .surface_adapter import merge_surface_map
 
 log = structlog.get_logger(__name__)
-
-NOT_YET_IMPLEMENTED_NOTE = (
-    "Paused after triaging — reporting is not implemented yet (see "
-    "docs/05-v1-roadmap.md milestone M3). This scan can be resumed once it "
-    "lands; it is not stuck or broken."
-)
 
 SKIPPED_PASSIVE_CHECKS_NOTE = (
     "Passive/config checks (headers, cookies, CORS, TLS, nuclei) are not "
@@ -631,21 +630,48 @@ async def run_scan(scan_id: str) -> None:
             status=PhaseStatus.COMPLETED,
             stats={"findings_triaged": len(findings)},
         )
+        await session.commit()
 
-        # --- Everything past this point is M3 (docs/05-v1-roadmap.md) ---
-        machine.transition(ScanState.PAUSED)
+        # --- Phase: REPORTING ---
+        # Scoped to what actually ran (docs/05-v1-roadmap.md M2 slice 2): a
+        # recon/surface/findings summary. PDF, SARIF, the AI-written
+        # narrative, and the attestation letter are M3/Verified-tier work —
+        # ScanReport.to_dict()'s own scope_note says so in the artifact
+        # itself, not just here.
+        phase = await _get_or_create_phase(session, scan, ScanPhaseName.REPORTING)
+        machine.transition(ScanState.REPORTING)
         scan.state = machine.current
-        scan.paused_from = machine.paused_from
-        scan.is_degraded = True
-        scan.degraded_reasons = [*scan.degraded_reasons, NOT_YET_IMPLEMENTED_NOTE]
+        await _start_phase(session, phase)
+
+        report = await build_scan_report(
+            session,
+            scan=scan,
+            target=target,
+            personas_crawled=[s.persona_id for s in surfaces],
+        )
+        report_row = await persist_report(report, scan=scan, store=build_report_store(settings))
+        session.add(report_row)
+        await session.flush()
+
+        await _finish_phase(
+            session,
+            phase,
+            status=PhaseStatus.COMPLETED,
+            stats={"report_id": str(report_row.id), **report.summary},
+        )
+
+        machine.transition(ScanState.COMPLETE)
+        scan.state = machine.current
+        scan.finished_at = datetime.now(UTC)
         await session.commit()
 
         log.info(
-            "scan_runner.paused_after_triaging",
+            "scan_runner.completed",
             scan_id=scan_id,
             assets_found=len(recon_result.assets),
             personas_crawled=len(surfaces),
             endpoints_created=total_created,
             findings_confirmed=access_control_stats.confirmed,
             findings_probable=access_control_stats.probable,
+            report_id=str(report_row.id),
         )
