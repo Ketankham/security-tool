@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Integer, LargeBinary, String
+from sqlalchemy import DateTime, ForeignKey, Integer, LargeBinary, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -33,7 +33,7 @@ class Credential(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     kind: Mapped[CredentialKind]
     ciphertext: Mapped[bytes] = mapped_column(LargeBinary)  # Fernet(org data key).encrypt(secret)
-    revoked_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Persona(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -59,8 +59,12 @@ class Persona(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     # Playwright storage_state, itself envelope-encrypted; short TTL.
     session_state_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
-    session_state_updated_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    session_state_expires_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    session_state_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    session_state_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Session oracle (docs/01 §6.5): how we cheaply confirm this persona's
     # session is still alive before trusting any authz verdict about it.

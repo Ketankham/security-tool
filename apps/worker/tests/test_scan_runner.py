@@ -55,14 +55,15 @@ async def _make_scan(session: AsyncSession, target: Target) -> Scan:
     return scan
 
 
-async def test_run_scan_pauses_after_surface_mapping_with_degraded_notes(db_engine):
+async def test_run_scan_pauses_after_triaging_with_degraded_notes(db_engine):
     """No personas are configured on this target, so AUTH_ESTABLISHING and
     CRAWLING both run in their honest degraded-anonymous-only mode (real
     browser, real network — `acme.test` doesn't resolve, so the crawl finds
     nothing, which the crawler treats as a normal empty result, not a
-    failure) and the scan still progresses all the way to SURFACE_MAPPING
-    before pausing, since the check engines past that are the only thing
-    still unimplemented."""
+    failure), ACCESS_CONTROL legitimately finds nothing to test (no personas
+    means no vertical/horizontal/anonymous boundary applies), and the scan
+    progresses all the way to TRIAGING before pausing, since reporting is
+    the only thing still unimplemented."""
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     async with factory() as session:
         target = await _make_scannable_target(session)
@@ -78,7 +79,7 @@ async def test_run_scan_pauses_after_surface_mapping_with_degraded_notes(db_engi
     async with factory() as session:
         refreshed = await session.get(Scan, scan.id)
         assert refreshed.state == ScanState.PAUSED
-        assert refreshed.paused_from == ScanState.SURFACE_MAPPING
+        assert refreshed.paused_from == ScanState.TRIAGING
         assert refreshed.is_degraded is True
         assert any("a note" in r for r in refreshed.degraded_reasons)
         assert any("No personas" in r for r in refreshed.degraded_reasons)
@@ -98,6 +99,14 @@ async def test_run_scan_pauses_after_surface_mapping_with_degraded_notes(db_engi
         assert phase_by_name[ScanPhaseName.CRAWLING].status == PhaseStatus.COMPLETED
         assert phase_by_name[ScanPhaseName.CRAWLING].stats_json["personas_crawled"] == ["anonymous"]
         assert phase_by_name[ScanPhaseName.SURFACE_MAPPING].status == PhaseStatus.COMPLETED
+        assert phase_by_name[ScanPhaseName.PASSIVE_CHECKS].status == PhaseStatus.SKIPPED
+        assert phase_by_name[ScanPhaseName.ACCESS_CONTROL].status == PhaseStatus.COMPLETED
+        assert phase_by_name[ScanPhaseName.ACCESS_CONTROL].stats_json["observed_requests"] == 0
+        assert phase_by_name[ScanPhaseName.ACTIVE_INJECTION].status == PhaseStatus.SKIPPED
+        assert phase_by_name[ScanPhaseName.SESSION_CHECKS].status == PhaseStatus.SKIPPED
+        assert phase_by_name[ScanPhaseName.BUSINESS_LOGIC].status == PhaseStatus.SKIPPED
+        assert phase_by_name[ScanPhaseName.VERIFYING].status == PhaseStatus.COMPLETED
+        assert phase_by_name[ScanPhaseName.TRIAGING].status == PhaseStatus.COMPLETED
 
         assets = (
             (await session.execute(select(Asset).where(Asset.scan_id == scan.id))).scalars().all()
