@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from .config import get_settings
 from .routers import findings, health, organizations, personas, scans, targets
 
 
@@ -13,6 +15,17 @@ def create_app() -> FastAPI:
         title="Sentinel API",
         description="Control plane: orgs, targets, personas, scans, findings.",
         version="0.1.0",
+    )
+
+    # The dashboard (apps/web) is a separate origin, so the browser needs
+    # CORS to call this API directly. Origins are config-driven; the dev
+    # auth stand-in header (X-Org-Id) must be allowed through.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=get_settings().cors_allow_origin_list,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     app.include_router(health.router)
