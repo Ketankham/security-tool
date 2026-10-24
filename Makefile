@@ -1,5 +1,5 @@
 .PHONY: sync lint fmt typecheck test test-unit test-integration up down logs migrate revision \
-        licence-check api worker clean
+        licence-check api worker web web-install clean
 
 sync:            ## Install/sync all workspace packages
 	uv sync --all-packages
@@ -46,6 +46,12 @@ api:             ## Run the API locally (outside docker) with reload
 
 worker:          ## Run a Celery worker locally (outside docker)
 	uv run --package sentinel-worker celery -A sentinel_worker_app.celery_app worker --workdir apps/worker --loglevel INFO
+
+web-install:     ## Install the dashboard's node deps (apps/web)
+	cd apps/web && npm install
+
+web:             ## Run the dashboard dev server (apps/web) on :3000
+	cd apps/web && npm run dev
 
 clean:
 	find . -type d -name '__pycache__' -not -path './.git/*' -exec rm -rf {} + 2>/dev/null || true

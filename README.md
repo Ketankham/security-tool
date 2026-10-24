@@ -53,6 +53,11 @@ M0 foundations + a first real vertical slice are built (see commits on this bran
 - **Data model** (`packages/db`) — the full schema from docs/01 §6, with the
   `confidence=CONFIRMED` invariant enforced at the database layer, not just by
   convention. 5 integration tests.
+- **Dashboard** (`apps/web`) — a Next.js 15 / React 19 / TypeScript operator UI:
+  onboard a target (ownership verify → authorization → scope → personas), run
+  scans, and watch each checkpoint go pending → running → done on a live phase
+  board with findings accumulating by severity. Thin typed client over the API;
+  all logic stays server-side. See [`apps/web/README.md`](apps/web/README.md).
 
 93 tests passing; `ruff`, `ruff format --check`, and `mypy` all clean across the
 workspace. Everything past recon (auth, crawler, authz/injection/session checks,
@@ -71,6 +76,17 @@ make test                        # or: make test-unit (no DB needed)
 `make up` needs a working Docker registry pull — if that's blocked in your
 environment, run Postgres/Redis natively and point `DATABASE_URL`/`REDIS_URL` in
 `.env` at them instead, then `make api` / `make worker` to run each service directly.
+
+The dashboard runs separately:
+
+```
+make web-install                 # installs apps/web node deps (Node 22+)
+make web                         # Next.js dev server on http://localhost:3000
+```
+
+It calls the API at `NEXT_PUBLIC_API_BASE` (default `http://localhost:8000`) and
+sends the dev `X-Org-Id` auth header; the API must list the dashboard's origin
+in `CORS_ALLOW_ORIGINS`. `make up` also builds and runs it as the `web` service.
 
 ## The one-line strategy
 
