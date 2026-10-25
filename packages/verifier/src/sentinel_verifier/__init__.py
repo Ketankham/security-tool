@@ -1,9 +1,21 @@
 """Deterministic re-proof gate: every candidate finding is independently
-re-executed >=2x before confidence=confirmed. Roadmap: M2.
+re-executed >=2x before confidence=confirmed (docs/02 Phase 9, ADR-0001).
 
-Not yet implemented — this package exists so the workspace, imports, and CI
-wiring are correct from day one (docs/05-v1-roadmap.md, M0 exit criteria).
-Implementation lands on the milestone named above.
+The Verifier is check-agnostic — it runs a caller-supplied ``reproduce``
+coroutine N times and decides ``passed``. The authorization engine
+(sentinel_checks) is its first caller; injection/session checks reuse the
+same gate.
 """
 
+from .models import MIN_REPRODUCTIONS, ReproductionAttempt, VerificationOutcome
+from .verifier import Reproducer, Verifier
+
 __version__ = "0.1.0"
+
+__all__ = [
+    "MIN_REPRODUCTIONS",
+    "ReproductionAttempt",
+    "VerificationOutcome",
+    "Reproducer",
+    "Verifier",
+]

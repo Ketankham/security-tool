@@ -58,10 +58,22 @@ M0 foundations + a first real vertical slice are built (see commits on this bran
   scans, and watch each checkpoint go pending → running → done on a live phase
   board with findings accumulating by severity. Thin typed client over the API;
   all logic stays server-side. See [`apps/web/README.md`](apps/web/README.md).
+- **Authorization engine** (`packages/checks/authz`) — the moat (docs/03 §4). The
+  replay matrix (who should be denied each persona's request) + the layered
+  access oracle (status → canary → structure → semantic) + the per-boundary
+  finding builder. Catches vertical/horizontal/anonymous broken-access-control,
+  proven deterministically by seeded canary tokens. 18 tests, including an
+  end-to-end run against a live multi-tenant fixture.
+- **Verifier** (`packages/verifier`) — the check-agnostic re-proof gate: a
+  candidate is only `CONFIRMED` after an independent re-execution reproduces the
+  same verdict ≥2× (all-must-reproduce, so a flaky verdict never confirms). 7 tests.
 
-93 tests passing; `ruff`, `ruff format --check`, and `mypy` all clean across the
-workspace. Everything past recon (auth, crawler, authz/injection/session checks,
-verifier, triage, reporter) is a stub package — see docs/05 for the milestone plan.
+110 tests passing without a database (plus the DB-backed integration tests);
+`ruff`, `ruff format --check`, and `mypy` all clean across the workspace. Still
+stubs: injection/session/passive checks, nuclei, triage,
+reporter, integrations — and wiring the authz engine into the worker's
+`access_control` phase (persisting findings, reading per-persona observed
+requests). See docs/05 for the milestone plan.
 
 ### Running it locally
 

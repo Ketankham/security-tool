@@ -5,6 +5,7 @@ description = "Passive/config, injection, authz, session-management and (v1.5) b
 requires-python = ">=3.11"
 dependencies = [
     "sentinel-core",
+    "sentinel-verifier",
 ]
 
 [build-system]
