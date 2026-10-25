@@ -25,7 +25,11 @@ def build_scope_guard(target: Target, scope_rules: list[ScopeRule]) -> ScopeGuar
     return ScopeGuard(
         allowed_hosts=allowed_hosts,
         rules=rules,
-        target_ownership_verified=target.ownership_verified,
+        # Client-portal model: no in-app ownership gate (authorization comes
+        # from the engagement). The guard still enforces allowed_hosts + scope
+        # rules below, which is what keeps traffic on the target's own hosts
+        # and off third parties — a separate control from ownership.
+        target_ownership_verified=True,
     )
 
 

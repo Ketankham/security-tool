@@ -227,21 +227,11 @@ async def run_scan(scan_id: str) -> None:
         scan.state = machine.current
         await _start_phase(session, phase)
 
-        if not target.is_scannable:
-            machine.transition(ScanState.BLOCKED_UNVERIFIED)
-            scan.state = machine.current
-            await _finish_phase(
-                session,
-                phase,
-                status=PhaseStatus.FAILED,
-                stats={},
-                error="Target is not scannable (ownership/authorization gate failed).",
-            )
-            scan.finished_at = datetime.now(UTC)
-            await session.commit()
-            log.info("scan_runner.blocked_unverified", scan_id=scan_id)
-            return
-
+        # Client-portal model: no in-app ownership/authorization gate here
+        # (authorization comes from the engagement). The ScopeGuard still
+        # pins every request to the target's own hosts + scope rules. The
+        # BLOCKED_UNVERIFIED state is retained in the machine for a future
+        # self-serve tier that re-enables a gate.
         await _finish_phase(
             session, phase, status=PhaseStatus.COMPLETED, stats={"target_scannable": True}
         )

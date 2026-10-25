@@ -1,9 +1,12 @@
-"""Passive/config, injection, authz, session-management and (v1.5)
-business-logic checks. Roadmap: M2-M3 (docs/03-check-catalogue.md).
+"""Check engines (docs/03-check-catalogue.md): passive/config, injection,
+authorization, session-management and (v1.5) business-logic.
 
-Not yet implemented — this package exists so the workspace, imports, and CI
-wiring are correct from day one (docs/05-v1-roadmap.md, M0 exit criteria).
-Implementation lands on the milestone named above.
+The authorization engine (``sentinel_checks.authz``) — the product's moat —
+is the first to land. The remaining engines follow on M2-M3.
 """
 
+from . import authz
+
 __version__ = "0.1.0"
+
+__all__ = ["authz"]

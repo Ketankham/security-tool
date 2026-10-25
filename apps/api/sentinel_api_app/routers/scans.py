@@ -27,13 +27,9 @@ async def create_scan(
     target: Target = Depends(get_owned_target),
     session: AsyncSession = Depends(get_session),
 ) -> Scan:
-    if not target.is_scannable:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "Target is not scannable yet — ownership must be verified and authorization "
-            "accepted first (see docs/06-safety-legal-abuse.md §1).",
-        )
-
+    # Client-portal model: no in-app ownership/authorization gate — a target
+    # is scannable as soon as it exists (Target.is_scannable). The ScopeGuard
+    # still confines every request to the target's own hosts.
     scan = Scan(target_id=target.id, triggered_by=payload.triggered_by)
     session.add(scan)
     await session.commit()

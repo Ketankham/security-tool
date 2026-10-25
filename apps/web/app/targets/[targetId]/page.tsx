@@ -7,7 +7,7 @@ import { OrgGate } from "../../OrgGate";
 import { ApiError, api } from "@/lib/api";
 import { usePoll } from "@/lib/usePoll";
 import { STATE_LABEL, isFailureState, isTerminal } from "@/lib/scan";
-import type { OwnershipChallenge, OwnershipMethod, Persona, Scan, ScopeRule, Target } from "@/lib/types";
+import type { Persona, Scan, ScopeRule, Target } from "@/lib/types";
 
 export default function TargetPage({ params }: { params: Promise<{ targetId: string }> }) {
   const { targetId } = use(params);
@@ -19,7 +19,7 @@ export default function TargetPage({ params }: { params: Promise<{ targetId: str
 }
 
 function TargetDetail({ targetId }: { targetId: string }) {
-  const { data: target, error, refresh } = usePoll<Target>(() => api.getTarget(targetId), 20000);
+  const { data: target, error } = usePoll<Target>(() => api.getTarget(targetId), 20000);
 
   return (
     <>
@@ -35,130 +35,12 @@ function TargetDetail({ targetId }: { targetId: string }) {
           <h1>{target.display_name}</h1>
           <p className="card-muted mono">{target.root_domain}</p>
 
-          <OwnershipCard target={target} onChange={refresh} />
           <ScopeCard targetId={targetId} />
           <PersonasCard targetId={targetId} />
           <ScansCard target={target} />
         </>
       )}
     </>
-  );
-}
-
-function OwnershipCard({ target, onChange }: { target: Target; onChange: () => void }) {
-  const [method, setMethod] = useState<OwnershipMethod>("dns_txt");
-  const [challenge, setChallenge] = useState<OwnershipChallenge | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [verifyMsg, setVerifyMsg] = useState<string | null>(null);
-
-  async function getChallenge() {
-    setBusy(true);
-    setError(null);
-    try {
-      setChallenge(await api.ownershipChallenge(target.id, method));
-    } catch (e) {
-      setError(e instanceof ApiError ? e.detail : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function verify() {
-    setBusy(true);
-    setError(null);
-    setVerifyMsg(null);
-    try {
-      const res = await api.ownershipVerify(target.id);
-      setVerifyMsg(res.detail);
-      if (res.verified) onChange();
-    } catch (e) {
-      setError(e instanceof ApiError ? e.detail : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function accept() {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.acceptAuthorization(target.id);
-      onChange();
-    } catch (e) {
-      setError(e instanceof ApiError ? e.detail : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="card">
-      <h2>
-        Ownership & authorization{" "}
-        {target.is_scannable ? (
-          <span className="badge tone-ok">Ready</span>
-        ) : (
-          <span className="badge tone-pending">Incomplete</span>
-        )}
-      </h2>
-      <p className="card-muted">
-        We never scan a target until ownership is proven and testing is
-        explicitly authorized. This gate is a safety requirement, not a
-        formality.
-      </p>
-
-      {error && <div className="error-box" style={{ margin: "10px 0" }}>{error}</div>}
-
-      {/* Step 1: ownership */}
-      {!target.ownership_verified ? (
-        <>
-          <div className="inline-form" style={{ marginTop: 10 }}>
-            <div>
-              <label>Verification method</label>
-              <select value={method} onChange={(e) => setMethod(e.target.value as OwnershipMethod)}>
-                <option value="dns_txt">DNS TXT record</option>
-                <option value="well_known_file">well-known file</option>
-                <option value="meta_tag">HTML meta tag</option>
-              </select>
-            </div>
-            <button disabled={busy} onClick={getChallenge}>
-              Get challenge
-            </button>
-          </div>
-          {challenge && (
-            <div className="notice" style={{ marginTop: 12 }}>
-              <strong>{challenge.instructions}</strong>
-              <pre className="block">{challenge.token}</pre>
-              <button className="btn-primary" style={{ marginTop: 10 }} disabled={busy} onClick={verify}>
-                {busy ? "Checking…" : "I've done it — verify"}
-              </button>
-              {verifyMsg && <div className="hint" style={{ marginTop: 8 }}>{verifyMsg}</div>}
-            </div>
-          )}
-        </>
-      ) : (
-        <div className="hint" style={{ marginTop: 8 }}>
-          ✓ Ownership verified
-          {target.ownership_verification_method ? ` via ${target.ownership_verification_method}` : ""}.
-        </div>
-      )}
-
-      {/* Step 2: authorization */}
-      {target.ownership_verified && !target.authorization_accepted && (
-        <div style={{ marginTop: 14 }}>
-          <button className="btn-primary" disabled={busy} onClick={accept}>
-            Accept testing authorization
-          </button>
-          <div className="hint" style={{ marginTop: 6 }}>
-            Confirms you own or are contractually authorized to test this target.
-          </div>
-        </div>
-      )}
-      {target.authorization_accepted && (
-        <div className="hint" style={{ marginTop: 8 }}>✓ Testing authorized.</div>
-      )}
-    </div>
   );
 }
 
@@ -410,14 +292,9 @@ function ScansCard({ target }: { target: Target }) {
       {startErr && <div className="error-box" style={{ marginBottom: 8 }}>{startErr}</div>}
 
       <div style={{ margin: "8px 0 14px" }}>
-        <button className="btn-primary" disabled={busy || !target.is_scannable} onClick={run}>
+        <button className="btn-primary" disabled={busy} onClick={run}>
           {busy ? "Starting…" : "Run scan"}
         </button>
-        {!target.is_scannable && (
-          <div className="hint" style={{ marginTop: 6 }}>
-            Verify ownership and accept authorization above first.
-          </div>
-        )}
       </div>
 
       {scans && scans.length === 0 && <div className="empty">No scans yet.</div>}
