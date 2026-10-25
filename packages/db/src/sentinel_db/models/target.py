@@ -61,9 +61,17 @@ class Target(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     @property
     def is_scannable(self) -> bool:
-        """The one-line gate the API and worker both check before letting
-        anything past QUEUED (docs/06 §1)."""
-        return self.ownership_verified and self.authorization_accepted
+        """Client-portal model: authorization comes from the engagement the
+        operator runs the scan under, not from an in-app ownership challenge,
+        so a target is scannable as soon as it exists. The ownership_verified
+        / authorization_accepted columns above are retained (dormant) so a
+        self-serve tier can re-enable a gate here later without a migration.
+
+        NOTE: this removes the *ownership* gate only. The scanner is still
+        confined to the target's own hosts by the ScopeGuard — that is a
+        separate blast-radius control (don't send traffic to third parties),
+        not an ownership check, and it stays on."""
+        return True
 
 
 class ScopeRule(UUIDPrimaryKeyMixin, TimestampMixin, Base):

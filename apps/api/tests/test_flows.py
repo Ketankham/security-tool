@@ -6,10 +6,7 @@ inside ownership verification and the Celery dispatch are stubbed.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
-
 import pytest
-from sentinel_api_app.services.ownership import VerificationResult
 
 pytestmark = pytest.mark.integration
 
@@ -41,7 +38,9 @@ async def test_create_org_rejects_duplicate_slug(client):
     assert resp.status_code == 409
 
 
-async def test_full_target_lifecycle_to_scannable(client):
+async def test_target_is_scannable_on_creation(client):
+    # Client-portal model: no in-app ownership gate — a target is scannable
+    # as soon as it exists (authorization comes from the engagement).
     org = await _create_org(client, slug="lifecycle")
     headers = _auth_headers(org["id"])
 
@@ -51,8 +50,22 @@ async def test_full_target_lifecycle_to_scannable(client):
         headers=headers,
     )
     assert target_resp.status_code == 201
-    target = target_resp.json()
-    assert target["is_scannable"] is False
+    assert target_resp.json()["is_scannable"] is True
+
+
+async def test_ownership_endpoints_remain_available_but_do_not_gate(client):
+    # The verification code is retained (dormant) for a future self-serve
+    # tier; the endpoint still responds, but scannability no longer depends
+    # on it.
+    org = await _create_org(client, slug="dormantverify")
+    headers = _auth_headers(org["id"])
+    target = (
+        await client.post(
+            "/targets",
+            json={"root_domain": "acme2.test", "display_name": "Acme 2"},
+            headers=headers,
+        )
+    ).json()
 
     challenge_resp = await client.post(
         f"/targets/{target['id']}/ownership-challenge",
@@ -60,29 +73,9 @@ async def test_full_target_lifecycle_to_scannable(client):
         headers=headers,
     )
     assert challenge_resp.status_code == 200
-    challenge = challenge_resp.json()
-    assert challenge["token"].startswith("sentinel-verify=")
-
-    with patch(
-        "sentinel_api_app.routers.targets.verify_ownership",
-        new=AsyncMock(return_value=VerificationResult(True, "matched (test double)")),
-    ):
-        verify_resp = await client.post(
-            f"/targets/{target['id']}/ownership-verify", headers=headers
-        )
-    assert verify_resp.status_code == 200
-    assert verify_resp.json()["verified"] is True
-
-    target_resp = await client.get(f"/targets/{target['id']}", headers=headers)
-    target = target_resp.json()
-    assert target["ownership_verified"] is True
-    assert target["is_scannable"] is False  # authorization not yet accepted
-
-    auth_resp = await client.post(
-        f"/targets/{target['id']}/authorization", json={"accepted": True}, headers=headers
-    )
-    assert auth_resp.status_code == 200
-    assert auth_resp.json()["is_scannable"] is True
+    assert challenge_resp.json()["token"].startswith("sentinel-verify=")
+    # Still scannable regardless of whether the challenge is ever satisfied.
+    assert target["is_scannable"] is True
 
 
 async def test_ownership_verify_without_challenge_is_400(client):
@@ -98,8 +91,9 @@ async def test_ownership_verify_without_challenge_is_400(client):
     assert resp.status_code == 400
 
 
-async def test_scan_requires_scannable_target(client, no_dispatch):
-    org = await _create_org(client, slug="notscannable")
+async def test_scan_created_on_fresh_target(client, no_dispatch):
+    # No gate: a scan can be created on a target as soon as it exists.
+    org = await _create_org(client, slug="freshscan")
     headers = _auth_headers(org["id"])
     target = (
         await client.post(
@@ -108,27 +102,16 @@ async def test_scan_requires_scannable_target(client, no_dispatch):
     ).json()
 
     resp = await client.post(f"/targets/{target['id']}/scans", json={}, headers=headers)
-    assert resp.status_code == 403
+    assert resp.status_code == 201
 
 
 async def _make_scannable_target(client, headers, domain="scannable.test"):
-    target = (
+    # No gate anymore: a freshly created target is already scannable.
+    return (
         await client.post(
             "/targets", json={"root_domain": domain, "display_name": "Scannable"}, headers=headers
         )
     ).json()
-    await client.post(
-        f"/targets/{target['id']}/ownership-challenge", json={"method": "dns_txt"}, headers=headers
-    )
-    with patch(
-        "sentinel_api_app.routers.targets.verify_ownership",
-        new=AsyncMock(return_value=VerificationResult(True, "matched (test double)")),
-    ):
-        await client.post(f"/targets/{target['id']}/ownership-verify", headers=headers)
-    await client.post(
-        f"/targets/{target['id']}/authorization", json={"accepted": True}, headers=headers
-    )
-    return target
 
 
 async def test_scan_created_when_target_scannable(client, no_dispatch):
