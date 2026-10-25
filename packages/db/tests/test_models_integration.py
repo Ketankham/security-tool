@@ -36,13 +36,17 @@ async def _make_org_target_scan(session):
     return org, target, scan
 
 
-async def test_target_is_scannable_reflects_both_gates(session_factory):
+async def test_target_is_scannable_in_client_portal_model(session_factory):
+    # Client-portal model: a target is scannable as soon as it exists, so
+    # is_scannable is independent of the (dormant) ownership/authorization
+    # columns. Toggling them off no longer makes it unscannable.
     async with session_factory() as session:
         org, target, _ = await _make_org_target_scan(session)
         assert target.is_scannable
 
+        target.ownership_verified = False
         target.authorization_accepted = False
-        assert not target.is_scannable
+        assert target.is_scannable
 
 
 async def test_probable_finding_persists_without_verification(session_factory):
