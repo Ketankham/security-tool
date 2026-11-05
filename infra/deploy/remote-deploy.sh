@@ -3,9 +3,12 @@
 # .github/workflows/deploy.yml after it has copied over:
 #   sentinel-images.tar.gz  docker-compose.prod.yml  remote-deploy.sh  edge/
 #
-# Required env (passed through from GitHub secrets):
+# Optional env (GitHub secrets — all may be left unset):
 #   KMS_MASTER_KEY  API_SECRET_KEY  POSTGRES_PASSWORD
-# Optional env:
+#       Generated on the server on first deploy and kept in
+#       /opt/sentinel/.secrets from then on. Set them only to supply your own
+#       values; a supplied KMS key / DB password that differs from the stored
+#       one aborts the deploy instead of silently breaking data.
 #   ANTHROPIC_API_KEY  SITE_DOMAIN (default accsysn.duckdns.org)
 #
 # Never touches /opt/accsys (the accounting app). It only adds/updates the
@@ -14,6 +17,7 @@ set -euo pipefail
 
 APP_DIR=/opt/sentinel
 EDGE_DIR=/opt/edge
+SECRETS_FILE="$APP_DIR/.secrets"
 COMPOSE=(docker compose -f "$APP_DIR/docker-compose.prod.yml" --project-directory "$APP_DIR")
 SITE_DOMAIN="${SITE_DOMAIN:-accsysn.duckdns.org}"
 
@@ -22,33 +26,65 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 cd "$APP_DIR"
 
-# --- 1. Validate secrets -----------------------------------------------------
-: "${KMS_MASTER_KEY:?KMS_MASTER_KEY secret is not set in the GitHub repo}"
-: "${API_SECRET_KEY:?API_SECRET_KEY secret is not set in the GitHub repo}"
-: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD secret is not set in the GitHub repo}"
+# --- 1. Resolve app secrets (stored on server > GitHub secret > generate) -----
+umask 077
 
-# Goes into a postgres:// URL unescaped, so keep it URL-safe.
-[[ "$POSTGRES_PASSWORD" =~ ^[A-Za-z0-9_-]+$ ]] \
-  || die "POSTGRES_PASSWORD may only contain letters, digits, '-' and '_' (generate with: openssl rand -hex 24)"
+stored_secret() { grep -m1 "^$1=" "$SECRETS_FILE" 2>/dev/null | cut -d= -f2- || true; }
+# Fernet key: urlsafe-base64 of 32 random bytes (44 chars ending in '=').
+gen_fernet() { head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '\n'; }
+gen_hex() { head -c "$1" /dev/urandom | od -An -vtx1 | tr -d ' \n'; }
 
-# A Fernet key is urlsafe-base64 of exactly 32 bytes = 44 chars ending in '='.
-[[ "$KMS_MASTER_KEY" =~ ^[A-Za-z0-9_-]{43}=$ ]] \
-  || die "KMS_MASTER_KEY is not a valid Fernet key (generate with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\")"
-
-# Every stored persona credential is encrypted under this key. If the secret
-# is ever changed by accident, all saved logins become undecryptable — so pin
-# its fingerprint on first deploy and refuse to start with a different key.
-KMS_FP="$(printf '%s' "$KMS_MASTER_KEY" | sha256sum | cut -d' ' -f1)"
-if [[ -f "$APP_DIR/.kms_fingerprint" ]]; then
-  [[ "$(cat "$APP_DIR/.kms_fingerprint")" == "$KMS_FP" ]] || die \
-    "KMS_MASTER_KEY differs from the key this server was first deployed with. Existing encrypted credentials would become unreadable. Restore the original secret, or — only if you really mean to rotate it and accept losing stored persona credentials — delete $APP_DIR/.kms_fingerprint on the server and redeploy."
-else
-  printf '%s\n' "$KMS_FP" > "$APP_DIR/.kms_fingerprint"
-  log "Pinned KMS_MASTER_KEY fingerprint (first deploy)."
+# If the database volume exists but the secrets file is gone, generating fresh
+# values would lock the app out of Postgres and make every stored credential
+# undecryptable. Stop and ask for the backup instead.
+if [[ ! -f "$SECRETS_FILE" ]] && docker volume inspect sentinel_pgdata >/dev/null 2>&1; then
+  die "$SECRETS_FILE is missing but the sentinel_pgdata volume exists. Restore the backed-up .secrets file to $SECRETS_FILE (or set KMS_MASTER_KEY/POSTGRES_PASSWORD secrets to the original values) and redeploy."
 fi
 
-# --- 2. Write .env (rewritten each deploy: GitHub secrets are the source of truth)
-umask 077
+# resolve NAME GENERATOR... — prints the value to use.
+#   pinned: once stored, a different supplied value is an error (KMS key, DB password)
+resolve() {
+  local name="$1" mode="$2"; shift 2
+  local stored provided
+  stored="$(stored_secret "$name")"
+  provided="${!name:-}"
+  if [[ -n "$stored" ]]; then
+    if [[ -n "$provided" && "$provided" != "$stored" ]]; then
+      [[ "$mode" == pinned ]] && die "GitHub secret $name differs from the value this server already uses (in $SECRETS_FILE). Changing it would break existing data. Remove the GitHub secret (the stored value will keep being used) or set it back to the original."
+      printf '%s' "$provided"; return
+    fi
+    printf '%s' "$stored"
+  elif [[ -n "$provided" ]]; then
+    printf '%s' "$provided"
+  else
+    log "Generating $name on the server (first deploy)." >&2
+    "$@"
+  fi
+}
+
+KMS_MASTER_KEY="$(resolve KMS_MASTER_KEY pinned gen_fernet)"
+POSTGRES_PASSWORD="$(resolve POSTGRES_PASSWORD pinned gen_hex 24)"
+API_SECRET_KEY="$(resolve API_SECRET_KEY rotatable gen_hex 32)"
+
+[[ "$KMS_MASTER_KEY" =~ ^[A-Za-z0-9_-]{43}=$ ]] \
+  || die "KMS_MASTER_KEY is not a valid Fernet key (python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\")"
+# Goes into a postgres:// URL unescaped, so keep it URL-safe.
+[[ "$POSTGRES_PASSWORD" =~ ^[A-Za-z0-9_-]+$ ]] \
+  || die "POSTGRES_PASSWORD may only contain letters, digits, '-' and '_'"
+[[ -n "$API_SECRET_KEY" ]] || die "API_SECRET_KEY resolved empty"
+
+FIRST_SECRETS=0; [[ -f "$SECRETS_FILE" ]] || FIRST_SECRETS=1
+cat > "$SECRETS_FILE" <<EOF
+KMS_MASTER_KEY=${KMS_MASTER_KEY}
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+API_SECRET_KEY=${API_SECRET_KEY}
+EOF
+chmod 600 "$SECRETS_FILE"
+if (( FIRST_SECRETS )); then
+  echo "NOTICE: created $SECRETS_FILE. Back it up off the server (scp root@<host>:$SECRETS_FILE .) — without it, stored persona credentials cannot be decrypted." >&2
+fi
+
+# --- 2. Write .env (rebuilt every deploy from the resolved values) -----------
 cat > "$APP_DIR/.env" <<EOF
 ENVIRONMENT=production
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -57,6 +93,7 @@ API_SECRET_KEY=${API_SECRET_KEY}
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
 CORS_ALLOW_ORIGINS=https://${SITE_DOMAIN}
 EOF
+chmod 600 "$APP_DIR/.env"
 umask 022
 
 # --- 3. Load images ----------------------------------------------------------

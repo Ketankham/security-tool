@@ -133,6 +133,8 @@ jobs:
 
       - name: Deploy on server
         uses: appleboy/ssh-action@v1.0.3
+        # The app secrets below are optional: when unset, remote-deploy.sh
+        # generates them on first deploy and keeps them in /opt/sentinel/.secrets.
         env:
           KMS_MASTER_KEY: ${{ secrets.KMS_MASTER_KEY }}
           API_SECRET_KEY: ${{ secrets.API_SECRET_KEY }}

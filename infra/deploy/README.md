@@ -50,15 +50,28 @@ the Actions tab (`workflow_dispatch`).
 
 ### GitHub secrets (security-tool repo → Settings → Secrets and variables → Actions)
 
+GitHub secrets are write-only, so they can't be copied over from the
+accounting repo. Only these three are needed, and they're the same values the
+accounting repo uses:
+
 | Secret | Value |
 |---|---|
-| `HETZNER_HOST` | same as the accounting repo |
-| `HETZNER_USER` | same as the accounting repo |
-| `HETZNER_SSH_KEY` | same as the accounting repo |
-| `KMS_MASTER_KEY` | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` — **back this up** |
-| `API_SECRET_KEY` | `openssl rand -hex 32` |
-| `POSTGRES_PASSWORD` | `openssl rand -hex 24` (letters/digits/`-`/`_` only — it goes into a DB URL) |
-| `ANTHROPIC_API_KEY` | optional; needed only for the LLM-assisted phases |
+| `HETZNER_HOST` | `accsysn.duckdns.org` (a domain works; the workflow resolves it) or the server IP |
+| `HETZNER_USER` | `root` (what `server-setup.sh` in the accounting repo set up) |
+| `HETZNER_SSH_KEY` | the same private key you pasted into the accounting repo (the whole file, including the `-----BEGIN … KEY-----` lines) |
+
+The app's own secrets are **generated on the server on the first deploy** and
+kept in `/opt/sentinel/.secrets` (mode 600): `KMS_MASTER_KEY`,
+`POSTGRES_PASSWORD`, `API_SECRET_KEY`. **Back that file up once** after the
+first deploy:
+
+```bash
+scp root@accsysn.duckdns.org:/opt/sentinel/.secrets ./sentinel-secrets.backup
+```
+
+Optional secrets: `ANTHROPIC_API_KEY` (LLM-assisted phases), and
+`KMS_MASTER_KEY` / `POSTGRES_PASSWORD` / `API_SECRET_KEY` only if you want to
+supply your own values instead of the generated ones.
 
 Optional repository **variable** `SITE_DOMAIN` (defaults to `accsysn.duckdns.org`).
 
@@ -79,15 +92,14 @@ Hetzner Cloud firewall (in the Hetzner console) is in use, allow 80 and 443 ther
   (`accsys`, `sentinel`, `edge`) mean `down` / `--remove-orphans` in one never
   removes another's containers. While the accounting app redeploys,
   `https://<domain>/` briefly returns 502; `/security` is unaffected.
-- **`KMS_MASTER_KEY` must never change.** Every stored persona credential is
-  encrypted under it. The first deploy pins its SHA-256 fingerprint in
-  `/opt/sentinel/.kms_fingerprint`, and later deploys abort if the secret
-  differs. To rotate on purpose (losing stored credentials), delete that file
-  on the server and redeploy.
-- **`POSTGRES_PASSWORD` only takes effect on the first start.** Postgres sets
-  it when it creates the `pgdata` volume. Changing the secret later breaks DB
-  auth: change the password inside Postgres first (`ALTER USER sentinel PASSWORD ...`),
-  then update the secret.
+- **`KMS_MASTER_KEY` and `POSTGRES_PASSWORD` must never change.** Every stored
+  persona credential is encrypted under the KMS key, and Postgres only accepts
+  the password it was created with. Once they're in `/opt/sentinel/.secrets`,
+  a deploy that's given a *different* value through a GitHub secret aborts
+  rather than breaking data. `API_SECRET_KEY` may be rotated by setting the secret.
+- **Lost `.secrets` file.** If it's missing while the `sentinel_pgdata` volume
+  still exists, the deploy aborts instead of generating new values that can't
+  open the existing database. Restore the backup to `/opt/sentinel/.secrets`.
 - **Ports 80/443 already in use.** On the first proxy start the script checks
   for this and fails with the process name instead of letting Caddy crash-loop.
 - **First-time HTTPS.** Caddy needs port 80 reachable from the internet to get
