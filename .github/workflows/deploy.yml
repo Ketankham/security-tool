@@ -1,0 +1,149 @@
+name: Deploy to Hetzner
+
+# Deploys to the same Hetzner box as the accounting app, served at
+# https://<SITE_DOMAIN>/security. Runs only after CI has passed on main
+# (never for pull requests), or manually. See infra/deploy/README.md.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# Never run two deploys at once; a newer one waits for the running one.
+concurrency:
+  group: deploy-hetzner-sentinel
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    env:
+      SITE_DOMAIN: ${{ vars.SITE_DOMAIN || 'accsysn.duckdns.org' }}
+
+    steps:
+      - name: Checkout the commit CI tested
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Resolve deploy host
+        id: resolve_host
+        env:
+          RAW_HOST: ${{ secrets.HETZNER_HOST }}
+        run: |
+          python - <<'PY'
+          import ipaddress
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          raw_host = (os.environ.get("RAW_HOST") or "").strip()
+          if not raw_host:
+              print("HETZNER_HOST secret is empty.", file=sys.stderr)
+              sys.exit(1)
+
+          host = raw_host
+          if "://" in host:
+              host = host.split("://", 1)[1]
+          host = host.split("/", 1)[0]
+          if ":" in host:
+              host = host.split(":", 1)[0]
+          host = host.strip()
+
+          try:
+              ipaddress.ip_address(host)
+              resolved_host = host
+          except ValueError:
+              urls = [
+                  (
+                      f"https://dns.google/resolve?name={host}&type=A",
+                      {"Accept": "application/json"},
+                  ),
+                  (
+                      f"https://cloudflare-dns.com/dns-query?name={host}&type=A",
+                      {"Accept": "application/dns-json"},
+                  ),
+              ]
+              resolved_host = None
+              errors = []
+
+              for url, headers in urls:
+                  try:
+                      request = urllib.request.Request(url, headers=headers)
+                      with urllib.request.urlopen(request, timeout=10) as response:
+                          payload = json.load(response)
+                      for answer in payload.get("Answer") or []:
+                          candidate = str(answer.get("data") or "").strip()
+                          try:
+                              ipaddress.ip_address(candidate)
+                              resolved_host = candidate
+                              break
+                          except ValueError:
+                              continue
+                      if resolved_host:
+                          break
+                  except Exception as exc:
+                      errors.append(f"{url}: {exc}")
+
+              if not resolved_host:
+                  print(
+                      f"Unable to resolve HETZNER_HOST '{host}'. Errors: {' | '.join(errors)}",
+                      file=sys.stderr,
+                  )
+                  sys.exit(1)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"host={resolved_host}\n")
+          PY
+
+      - name: Build images
+        run: |
+          docker build -f infra/docker/Dockerfile.api -t sentinel-api:latest .
+          docker build -f infra/docker/Dockerfile.worker -t sentinel-worker:latest .
+          # Same-origin API behind the proxy: relative base, no CORS round-trip.
+          docker build -f infra/docker/Dockerfile.web \
+            --build-arg NEXT_PUBLIC_BASE_PATH=/security \
+            --build-arg NEXT_PUBLIC_API_BASE=/security/api \
+            -t sentinel-web:latest .
+
+      - name: Bundle images and deploy files
+        run: |
+          mkdir -p deploy-bundle
+          docker save sentinel-api:latest sentinel-worker:latest sentinel-web:latest \
+            | gzip > deploy-bundle/sentinel-images.tar.gz
+          cp infra/deploy/docker-compose.prod.yml infra/deploy/remote-deploy.sh deploy-bundle/
+          cp -r infra/deploy/edge deploy-bundle/edge
+          ls -lh deploy-bundle
+
+      - name: Copy bundle to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ steps.resolve_host.outputs.host }}
+          username: ${{ secrets.HETZNER_USER }}
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          source: "deploy-bundle/*"
+          strip_components: 1
+          target: "/opt/sentinel"
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1.0.3
+        # The app secrets below are optional: when unset, remote-deploy.sh
+        # generates them on first deploy and keeps them in /opt/sentinel/.secrets.
+        env:
+          KMS_MASTER_KEY: ${{ secrets.KMS_MASTER_KEY }}
+          API_SECRET_KEY: ${{ secrets.API_SECRET_KEY }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          host: ${{ steps.resolve_host.outputs.host }}
+          username: ${{ secrets.HETZNER_USER }}
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          command_timeout: 20m
+          envs: KMS_MASTER_KEY,API_SECRET_KEY,POSTGRES_PASSWORD,ANTHROPIC_API_KEY,SITE_DOMAIN
+          script: bash /opt/sentinel/remote-deploy.sh

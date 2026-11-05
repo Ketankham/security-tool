@@ -19,6 +19,10 @@ import type {
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
 
+// URL prefix the dashboard is mounted under (see next.config.mjs). Next adds it
+// to <Link>/router.push itself; use this only for raw window.location moves.
+export const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH || "").replace(/\/$/, "");
+
 const ORG_KEY = "sentinel.orgId";
 
 export function getOrgId(): string | null {

@@ -88,6 +88,13 @@ It calls the API at `NEXT_PUBLIC_API_BASE` (default `http://localhost:8000`) and
 sends the dev `X-Org-Id` auth header; the API must list the dashboard's origin
 in `CORS_ALLOW_ORIGINS`. `make up` also builds and runs it as the `web` service.
 
+### Deploying
+
+Every push to `main` that passes CI deploys to the shared Hetzner server at
+`https://accsysn.duckdns.org/security` (dashboard) and `/security/api` (API),
+next to the accounting app. Setup, secrets and guard rails are in
+[`infra/deploy/README.md`](infra/deploy/README.md).
+
 ## The one-line strategy
 
 Be the tool that finds **authorization bugs with near-zero false positives**, sell it to
