@@ -30,9 +30,11 @@ so there's no CORS hop in production.
 
 ## Deploy flow
 
-`.github/workflows/deploy.yml` runs automatically **after CI succeeds on a push
-to `main`** (pull-request CI runs never deploy). It can also be run by hand from
-the Actions tab (`workflow_dispatch`).
+Deploying is the `deploy` job in `.github/workflows/ci.yml`. It runs
+automatically on every push to `main`, **after both `lint-and-test` and
+`container-build` pass**, and never for pull requests. To deploy by hand, go to
+**Actions → CI → Run workflow** and pick `main`; that runs the tests first, then
+deploys.
 
 1. Builds `sentinel-api`, `sentinel-worker` (with Chromium) and `sentinel-web`
    (built with `NEXT_PUBLIC_BASE_PATH=/security`, `NEXT_PUBLIC_API_BASE=/security/api`).
