@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { clearOrgId, getOrgId } from "@/lib/api";
+import { BASE_PATH, clearOrgId, getOrgId } from "@/lib/api";
 
 export function TopBar() {
   const [orgId, setOrg] = useState<string | null>(null);
@@ -36,7 +36,7 @@ export function TopBar() {
               onClick={() => {
                 clearOrgId();
                 window.dispatchEvent(new Event("sentinel:org"));
-                window.location.href = "/";
+                window.location.href = `${BASE_PATH}/`;
               }}
             >
               Switch

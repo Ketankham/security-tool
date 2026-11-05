@@ -17,4 +17,12 @@ RUN uv sync --frozen --package sentinel-worker --no-dev
 
 ENV PATH="/app/.venv/bin:${PATH}"
 
+# The AUTH_ESTABLISHING and CRAWLING phases drive a real browser
+# (sentinel-auth / sentinel-crawler use Playwright). Install the Chromium
+# revision matching the locked playwright package, plus its system libs, into
+# a fixed path so it is found regardless of the worker's --workdir.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+
 CMD ["celery", "-A", "sentinel_worker_app.celery_app", "worker", "--workdir", "apps/worker", "--loglevel", "INFO"]

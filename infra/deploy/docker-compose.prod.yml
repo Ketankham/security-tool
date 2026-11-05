@@ -1,0 +1,133 @@
+# Production stack on the shared Hetzner box, served at
+#   https://<SITE_DOMAIN>/security       -> web (Next.js dashboard)
+#   https://<SITE_DOMAIN>/security/api   -> api (FastAPI)
+# by the shared Caddy proxy in infra/deploy/edge. See infra/deploy/README.md.
+#
+# Port rules on this box (the accounting app lives next door in /opt/accsys):
+#   * Nothing here may use port 8000 — not on the host, and not as a
+#     *container* port either: the accounting deploy runs
+#     `docker ps --filter publish=8000 | xargs docker stop`, and that filter
+#     matches the container-side port. The API therefore listens on 8100.
+#   * App ports bind to 127.0.0.1 only; Caddy (host network) is the sole
+#     public entry point. Postgres and Redis publish nothing at all.
+name: sentinel
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing from .env}
+      POSTGRES_DB: sentinel
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    image: sentinel-api:latest
+    restart: unless-stopped
+    env_file: .env
+    environment: &app-env
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql+asyncpg://sentinel:${POSTGRES_PASSWORD}@postgres:5432/sentinel
+      DATABASE_URL_SYNC: postgresql+psycopg://sentinel:${POSTGRES_PASSWORD}@postgres:5432/sentinel
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_BACKEND: local
+      # Absolute: the worker runs with --workdir apps/worker, so a relative
+      # path would land somewhere different from the API's.
+      STORAGE_LOCAL_PATH: /app/data/transcripts
+    # Caddy strips /security/api before proxying; --root-path makes /docs and
+    # the OpenAPI schema link back through the prefix.
+    command:
+      - uvicorn
+      - sentinel_api_app.main:app
+      - --app-dir=apps/api
+      - --host=0.0.0.0
+      - --port=8100
+      - --root-path=/security/api
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+    ports:
+      - "127.0.0.1:8100:8100"
+    volumes:
+      - sentinel_data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8100/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: sentinel-worker:latest
+    restart: unless-stopped
+    env_file: .env
+    environment: *app-env
+    command:
+      - celery
+      - -A
+      - sentinel_worker_app.celery_app
+      - worker
+      - --workdir=apps/worker
+      - --loglevel=INFO
+      # One scan at a time: headless Chromium is the memory hog on a box
+      # shared with the accounting app's MySQL.
+      - --concurrency=1
+    volumes:
+      - sentinel_data:/app/data
+    # Chromium crashes with Docker's default 64 MB /dev/shm.
+    shm_size: "512mb"
+    mem_limit: 2g
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    image: sentinel-web:latest
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+      # Next standalone binds to $HOSTNAME, which Docker sets to the container id.
+      HOSTNAME: 0.0.0.0
+    ports:
+      - "127.0.0.1:3100:3000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/security').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  redisdata:
+  sentinel_data:

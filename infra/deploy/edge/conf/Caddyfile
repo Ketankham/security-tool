@@ -1,0 +1,37 @@
+# Shared front door for every app on the Hetzner box (lives in /opt/edge).
+# Caddy runs with host networking, listens on 80/443, gets and renews the
+# Let's Encrypt certificate for SITE_DOMAIN on its own, and proxies to
+# loopback-bound app ports.
+#
+#   /security/api/*  -> Sentinel API   (127.0.0.1:8100, prefix stripped)
+#   /security[/*]    -> Sentinel web   (127.0.0.1:3100, prefix kept: Next basePath)
+#   everything else  -> Accsys accounting (127.0.0.1:8000)
+#
+# The accounting app's own http://<domain>:8000 keeps working untouched;
+# this just adds https://<domain>/ in front of it as well.
+
+{$SITE_DOMAIN:accsysn.duckdns.org} {
+	encode zstd gzip
+
+	# `route` keeps these in written order (most specific first) instead of
+	# Caddy's automatic directive sorting.
+	route {
+		handle_path /security/api/* {
+			reverse_proxy 127.0.0.1:8100
+		}
+
+		@sentinel_web path /security /security/*
+		handle @sentinel_web {
+			reverse_proxy 127.0.0.1:3100
+		}
+
+		handle {
+			reverse_proxy 127.0.0.1:8000
+		}
+	}
+
+	log {
+		output stderr
+		format console
+	}
+}
