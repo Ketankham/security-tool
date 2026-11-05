@@ -113,6 +113,16 @@ log "Running database migrations..."
 log "Starting api, worker, web..."
 "${COMPOSE[@]}" up -d --remove-orphans --wait --wait-timeout 180
 
+# The worker has no healthcheck, so --wait counts it as healthy the moment it
+# starts — even if it then crash-loops. Watch it for a bit and fail loudly,
+# with its logs, instead of reporting a green deploy with a dead worker.
+WORKER_CID="$("${COMPOSE[@]}" ps -q worker)"
+sleep 20
+if [[ "$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' "$WORKER_CID")" != "true 0" ]]; then
+  docker logs --tail 40 "$WORKER_CID" >&2 || true
+  die "Worker is not staying up (state: $(docker inspect -f '{{.State.Status}}, restarts={{.RestartCount}}' "$WORKER_CID")). Logs above."
+fi
+
 # --- 6. Shared Caddy proxy (/opt/edge) -------------------------------------------
 log "Updating shared reverse proxy in $EDGE_DIR..."
 mkdir -p "$EDGE_DIR/conf"
@@ -123,9 +133,11 @@ printf 'SITE_DOMAIN=%s\n' "$SITE_DOMAIN" > "$EDGE_DIR/.env"
 EDGE=(docker compose -f "$EDGE_DIR/docker-compose.yml" --project-directory "$EDGE_DIR")
 
 if [[ -z "$("${EDGE[@]}" ps -q caddy 2>/dev/null)" ]]; then
-  # First start: make sure nothing else (e.g. a stray nginx/apache) holds 80/443,
-  # otherwise Caddy would crash-loop silently.
-  for port in 80 443; do
+  # First start: make sure nothing else holds the ports Caddy binds (443, and
+  # its internal plain-HTTP port 8089 — see the Caddyfile; port 80 belongs to
+  # another app on this box and is deliberately not used), otherwise Caddy
+  # would crash-loop silently.
+  for port in 443 8089; do
     if ss -ltnH "sport = :$port" | grep -q .; then
       die "Port $port is already in use on this server ($(ss -ltnpH "sport = :$port" | head -1)). Free it, then redeploy."
     fi
