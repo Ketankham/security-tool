@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs ON the Hetzner server, from /opt/sentinel, invoked by
-# .github/workflows/deploy.yml after it has copied over:
+# the `deploy` job in .github/workflows/ci.yml after it has copied over:
 #   sentinel-images.tar.gz  docker-compose.prod.yml  remote-deploy.sh  edge/
 #
 # Optional env (GitHub secrets — all may be left unset):
