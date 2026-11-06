@@ -45,7 +45,7 @@ api:             ## Run the API locally (outside docker) with reload
 	uv run --package sentinel-api uvicorn sentinel_api_app.main:app --app-dir apps/api --reload --port 8000
 
 worker:          ## Run a Celery worker locally (outside docker)
-	uv run --package sentinel-worker celery -A sentinel_worker_app.celery_app worker --workdir apps/worker --loglevel INFO
+	uv run --package sentinel-worker celery --workdir apps/worker -A sentinel_worker_app.celery_app worker --loglevel INFO
 
 web-install:     ## Install the dashboard's node deps (apps/web)
 	cd apps/web && npm install

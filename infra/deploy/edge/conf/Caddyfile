@@ -1,16 +1,31 @@
-# Shared front door for every app on the Hetzner box (lives in /opt/edge).
-# Caddy runs with host networking, listens on 80/443, gets and renews the
-# Let's Encrypt certificate for SITE_DOMAIN on its own, and proxies to
-# loopback-bound app ports.
+# Shared front door on the Hetzner box (lives in /opt/edge). Caddy runs with
+# host networking and serves HTTPS on 443 only.
 #
-#   /security/api/*  -> Sentinel API   (127.0.0.1:8100, prefix stripped)
-#   /security[/*]    -> Sentinel web   (127.0.0.1:3100, prefix kept: Next basePath)
-#   everything else  -> Accsys accounting (127.0.0.1:8000)
+# Port 80 is NOT ours: another app on this box (mep-web) publishes it and
+# serves http://<domain>/. So Caddy:
+#   * never binds 80 — its plain-HTTP listener is moved to 8089, which ufw
+#     keeps closed to the internet (Caddy is not a Docker-published port);
+#   * gets its Let's Encrypt certificate with the TLS-ALPN-01 challenge, which
+#     runs entirely over 443 (the HTTP-01 challenge would need port 80);
+#   * does not redirect http->https (that would need port 80 too).
 #
-# The accounting app's own http://<domain>:8000 keeps working untouched;
-# this just adds https://<domain>/ in front of it as well.
+#   https://<domain>/security/api/*  -> Sentinel API   (127.0.0.1:8100, prefix stripped)
+#   https://<domain>/security[/*]    -> Sentinel web   (127.0.0.1:3100, prefix kept: Next basePath)
+#   https://<domain>/anything-else   -> redirect to http://<domain>/... (the app that owns port 80)
+#
+# The accounting app stays on http://<domain>:8000/ and is not proxied here.
+{
+	http_port 8089
+	auto_https disable_redirects
+}
 
 {$SITE_DOMAIN:accsysn.duckdns.org} {
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+
 	encode zstd gzip
 
 	# `route` keeps these in written order (most specific first) instead of
@@ -25,8 +40,10 @@
 			reverse_proxy 127.0.0.1:3100
 		}
 
+		# Everything else on this domain belongs to whatever serves port 80;
+		# send HTTPS visitors there rather than guessing.
 		handle {
-			reverse_proxy 127.0.0.1:8000
+			redir http://{host}{uri} 302
 		}
 	}
 

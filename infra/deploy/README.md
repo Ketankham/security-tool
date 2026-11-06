@@ -7,18 +7,22 @@ domain, under a path:
 |---|---|
 | `https://accsysn.duckdns.org/security` | Sentinel dashboard (Next.js) |
 | `https://accsysn.duckdns.org/security/api/docs` | Sentinel API (FastAPI / Swagger) |
-| `https://accsysn.duckdns.org/` | Accsys accounting (new HTTPS entry, same app) |
-| `http://accsysn.duckdns.org:8000/` | Accsys accounting — **unchanged**, still works |
+| `http://accsysn.duckdns.org:8000/` | Accsys accounting, **unchanged** |
+| `http://accsysn.duckdns.org/` (port 80) | another app on the box (`mep-web`), **unchanged**, not ours |
+
+Use the `https://` links. Plain `http://accsysn.duckdns.org/security` lands
+on port 80, which belongs to `mep-web`, so it shows that app's 404 instead.
 
 ## How it fits together
 
 ```
 Internet
-  ├─ :80/:443 ──► Caddy  (/opt/edge, host network, auto Let's Encrypt)
-  │                 ├─ /security/api/*  ─► 127.0.0.1:8100  sentinel api   (prefix stripped)
-  │                 ├─ /security[/*]    ─► 127.0.0.1:3100  sentinel web   (prefix kept, Next basePath)
-  │                 └─ /*               ─► 127.0.0.1:8000  accsys app
-  └─ :8000 ───────────────────────────────►               accsys app     (direct, as before)
+  ├─ :443 ──► Caddy  (/opt/edge, host network, Let's Encrypt via TLS-ALPN on 443)
+  │             ├─ /security/api/*  ─► 127.0.0.1:8100  sentinel api   (prefix stripped)
+  │             ├─ /security[/*]    ─► 127.0.0.1:3100  sentinel web   (prefix kept, Next basePath)
+  │             └─ /*               ─► 302 redirect to http://<domain>/... (port 80's owner)
+  ├─ :80 ───► mep-web     (another app, not touched by this repo)
+  └─ :8000 ─► accsys app  (direct, as before)
 
 /opt/accsys     accounting compose project (untouched by this repo)
 /opt/sentinel   api, worker, web, postgres, redis   (this repo)
@@ -80,8 +84,8 @@ Optional repository **variable** `SITE_DOMAIN` (defaults to `accsysn.duckdns.org
 ### Server
 
 Nothing to install by hand: Docker is already there from the accounting setup,
-and `server-setup.sh` there already opened ports 80/443 in `ufw`. If the
-Hetzner Cloud firewall (in the Hetzner console) is in use, allow 80 and 443 there too.
+and `server-setup.sh` there already opened port 443 in `ufw`. If the
+Hetzner Cloud firewall (in the Hetzner console) is in use, allow 443 there too.
 
 ## Edge cases and guard rails
 
@@ -102,13 +106,21 @@ Hetzner Cloud firewall (in the Hetzner console) is in use, allow 80 and 443 ther
 - **Lost `.secrets` file.** If it's missing while the `sentinel_pgdata` volume
   still exists, the deploy aborts instead of generating new values that can't
   open the existing database. Restore the backup to `/opt/sentinel/.secrets`.
-- **Ports 80/443 already in use.** On the first proxy start the script checks
-  for this and fails with the process name instead of letting Caddy crash-loop.
-- **First-time HTTPS.** Caddy needs port 80 reachable from the internet to get
+- **Port 80 belongs to another app.** `mep-web` publishes port 80 on this box,
+  so Caddy never binds it. Its plain-HTTP listener is moved to 8089 (closed by
+  `ufw`), it doesn't redirect http to https, and it gets certificates with the
+  TLS-ALPN-01 challenge, which needs only port 443. On the first proxy start
+  the script checks that 443 and 8089 are free, and if they aren't it fails
+  naming the process instead of letting Caddy crash-loop.
+- **First-time HTTPS.** Caddy needs port 443 reachable from the internet to get
   the certificate, and the first issuance can take a minute. The script only
   warns if the HTTPS check fails then. Logs: `docker logs edge-caddy-1`.
   Certificates live in the `edge_caddy_data` volume; don't delete it, or you
   may hit Let's Encrypt rate limits.
+- **Worker crash-loops.** The worker has no healthcheck, so `compose --wait`
+  would report it healthy even while it restart-loops. The deploy watches it
+  for 20 s after start and fails with its last 40 log lines if it isn't still
+  up with zero restarts.
 - **Memory.** The worker runs one scan at a time (`--concurrency=1`), is capped
   at 2 GB, and has a 512 MB `/dev/shm` (Chromium crashes on Docker's 64 MB default).
 - **Recon binaries.** `subfinder` / `httpx` / `tlsx` aren't in the worker image;

@@ -86,10 +86,12 @@ services:
     environment: *app-env
     command:
       - celery
+      # Global option: must precede the subcommand, or celery exits with
+      # "No such option '--workdir'" (exit 2) and the container restart-loops.
+      - --workdir=apps/worker
       - -A
       - sentinel_worker_app.celery_app
       - worker
-      - --workdir=apps/worker
       - --loglevel=INFO
       # One scan at a time: headless Chromium is the memory hog on a box
       # shared with the accounting app's MySQL.
