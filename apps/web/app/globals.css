@@ -5,7 +5,8 @@
   --border: #243044;
   --text: #e6ebf2;
   --text-dim: #9aa7bd;
-  --text-faint: #6b7890;
+  /* Raised from #6b7890 for WCAG AA (4.5:1) on the card background (QA #10). */
+  --text-faint: #8f9bb1;
   --accent: #4f9cff;
   --accent-dim: #2b4a6f;
   --ok: #3ecf8e;
@@ -182,7 +183,7 @@ button:disabled {
 
 label {
   display: block;
-  font-size: 0.82rem;
+  font-size: 0.85rem;
   color: var(--text-dim);
   margin: 10px 0 4px;
 }
@@ -451,4 +452,29 @@ details.ev {
 details.ev summary {
   cursor: pointer;
   color: var(--text-dim);
+}
+
+/* QA #10: placeholders were near-invisible on the dark inputs. */
+::placeholder {
+  color: var(--text-faint);
+  opacity: 1;
+}
+
+/* QA #21: nothing may push the page wider than the viewport (long ids,
+   domains, regexes and JSON wrap instead of clipping off the right edge). */
+.card,
+.list-item .grow,
+.notice,
+.error-box,
+.hint {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+pre.block {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+textarea {
+  max-width: 100%;
+  resize: vertical;
 }

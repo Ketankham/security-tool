@@ -52,6 +52,10 @@ services:
       # Absolute: the worker runs with --workdir apps/worker, so a relative
       # path would land somewhere different from the API's.
       STORAGE_LOCAL_PATH: /app/data/transcripts
+      # Ownership-verification gate OFF on this deployment (client portals
+      # under engagement only; requested 2026-11-12). Scans still stay inside
+      # each target's own hosts + scope rules. Set "true" to re-enable.
+      REQUIRE_OWNERSHIP_VERIFICATION: "false"
     # Caddy strips /security/api before proxying; --root-path makes /docs and
     # the OpenAPI schema link back through the prefix.
     command:

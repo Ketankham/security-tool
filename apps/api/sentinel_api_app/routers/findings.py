@@ -4,6 +4,8 @@ written directly through this router."""
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sentinel_db.models import Finding, Organization, Scan, Target
 from sqlalchemy import select
@@ -18,7 +20,7 @@ router = APIRouter(tags=["findings"])
 
 @router.get("/scans/{scan_id}/findings", response_model=list[FindingOut])
 async def list_findings(
-    scan_id: str,
+    scan_id: UUID,
     org: Organization = Depends(get_current_org),
     session: AsyncSession = Depends(get_session),
 ) -> list[Finding]:

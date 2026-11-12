@@ -13,7 +13,7 @@ from sentinel_core.scope_guard import ScopeRule as CoreScopeRule
 from sentinel_core.transcript import LocalTranscriptStore, TranscriptRecorder, TranscriptStore
 from sentinel_db.models import ScopeRule, Target
 
-from .config import Settings
+from .config import Settings, get_settings
 
 
 def build_scope_guard(target: Target, scope_rules: list[ScopeRule]) -> ScopeGuard:
@@ -22,10 +22,14 @@ def build_scope_guard(target: Target, scope_rules: list[ScopeRule]) -> ScopeGuar
         CoreScopeRule(kind=r.kind, pattern=r.pattern, effect=r.effect, label=r.label)
         for r in scope_rules
     ]
+    # With the ownership gate switched off for this deployment, the guard's
+    # all-requests block for unverified targets is lifted too; host + scope
+    # rule confinement below still applies to every request.
+    ownership_ok = target.ownership_verified or not get_settings().require_ownership_verification
     return ScopeGuard(
         allowed_hosts=allowed_hosts,
         rules=rules,
-        target_ownership_verified=target.ownership_verified,
+        target_ownership_verified=ownership_ok,
     )
 
 

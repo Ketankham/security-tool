@@ -62,6 +62,16 @@ function Dashboard() {
   );
 }
 
+// Mirrors the API's normalisation (apps/api/.../services/domains.py) just
+// enough to preview what will be stored; the API remains the authority and
+// returns a readable 422 for anything it rejects.
+function previewDomain(raw: string): string {
+  let v = raw.trim();
+  if (v.includes("://")) v = v.split("://")[1] ?? "";
+  v = v.split(/[/?#]/)[0] ?? "";
+  return v.replace(/\.+$/, "").toLowerCase();
+}
+
 function AddTarget({ onAdded }: { onAdded: () => void }) {
   const [open, setOpen] = useState(false);
   const [domain, setDomain] = useState("");
@@ -70,13 +80,19 @@ function AddTarget({ onAdded }: { onAdded: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function submit() {
+  async function submit(e?: React.FormEvent) {
+    e?.preventDefault();
+    if (busy) return;
+    if (!domain.trim()) {
+      setError("Enter the root domain, e.g. app.example.com.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       await api.createTarget({
         root_domain: domain.trim(),
-        display_name: displayName.trim() || domain.trim(),
+        display_name: displayName.trim() || previewDomain(domain) || domain.trim(),
         is_production: isProd,
       });
       setDomain("");
@@ -100,14 +116,26 @@ function AddTarget({ onAdded }: { onAdded: () => void }) {
     );
   }
 
+  const preview = previewDomain(domain);
   return (
-    <div className="card">
+    <form className="card" onSubmit={submit}>
       <h2>Add target</h2>
       {error && <div className="error-box" style={{ marginBottom: 10 }}>{error}</div>}
       <div className="row">
         <div>
-          <label>Root domain</label>
-          <input value={domain} placeholder="app.example.com" onChange={(e) => setDomain(e.target.value)} />
+          <label>Root domain *</label>
+          <input
+            value={domain}
+            required
+            className="mono"
+            placeholder="app.example.com"
+            onChange={(e) => setDomain(e.target.value)}
+          />
+          <div className="hint" style={{ marginTop: 4 }}>
+            {preview && preview !== domain.trim()
+              ? <>Saved as <span className="mono">{preview}</span> (domain only).</>
+              : <>Just the domain, e.g. <span className="mono">app.example.com</span>. Its subdomains are included.</>}
+          </div>
         </div>
         <div>
           <label>Display name</label>
@@ -123,12 +151,18 @@ function AddTarget({ onAdded }: { onAdded: () => void }) {
         />
         This is a production environment
       </label>
+      <div className="hint">
+        For now this only labels the target. Every scan is already gentle: at most 5 requests per
+        second, no form submissions (apart from logging in as your personas), and no delete or
+        logout-style links. Exclude risky areas
+        (payments, deletes) with scope rules after adding the target.
+      </div>
       <div className="row" style={{ marginTop: 14 }}>
-        <button className="btn-primary" disabled={busy || !domain.trim()} onClick={submit}>
+        <button className="btn-primary" type="submit" disabled={busy}>
           {busy ? "Adding…" : "Add"}
         </button>
-        <button onClick={() => setOpen(false)}>Cancel</button>
+        <button type="button" onClick={() => setOpen(false)}>Cancel</button>
       </div>
-    </div>
+    </form>
   );
 }

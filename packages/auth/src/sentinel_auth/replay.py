@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 
 from playwright.async_api import Browser
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from .browser import chromium_launch_kwargs
@@ -63,6 +64,17 @@ class LoginReplayer:
             return LoginReplayResult(
                 success=False,
                 error=f"missing credential for ref {exc}",
+                duration_s=time.monotonic() - start,
+            )
+        except PlaywrightError as exc:
+            # e.g. a malformed CSS selector typed into the dashboard's login
+            # form, or the login page failing to load. A hand-written recipe
+            # being wrong is an expected, reportable outcome ("Unavailable:
+            # ..."), not a crash of the auth phase. (TimeoutError subclasses
+            # Error, so the more specific handler above still wins.)
+            return LoginReplayResult(
+                success=False,
+                error=f"login step failed: {str(exc).splitlines()[0][:300]}",
                 duration_s=time.monotonic() - start,
             )
         finally:

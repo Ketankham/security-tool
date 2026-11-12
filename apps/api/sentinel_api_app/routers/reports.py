@@ -6,6 +6,7 @@ scan whose target belongs to the caller's org."""
 from __future__ import annotations
 
 import json
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sentinel_core.transcript import LocalTranscriptStore
@@ -21,7 +22,7 @@ router = APIRouter(tags=["reports"])
 
 @router.get("/scans/{scan_id}/report")
 async def get_scan_report(
-    scan_id: str,
+    scan_id: UUID,
     org: Organization = Depends(get_current_org),
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),

@@ -38,8 +38,16 @@ function ScanDetail({ scanId }: { scanId: string }) {
         {scanId.slice(0, 8)}
       </div>
 
-      {error && <div className="error-box">{error}</div>}
-      {!scan ? (
+      {error && scan && <div className="error-box">{error}</div>}
+      {error && !scan ? (
+        <div className="card">
+          <h2>Scan not found</h2>
+          <p className="card-muted">
+            This scan doesn&apos;t exist, or it belongs to a different organization. ({error})
+          </p>
+          <Link href="/">← Back to targets</Link>
+        </div>
+      ) : !scan ? (
         <div className="notice">Loading scan…</div>
       ) : (
         <>

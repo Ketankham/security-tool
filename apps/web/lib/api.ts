@@ -50,6 +50,24 @@ export function clearOrgId(): void {
   }
 }
 
+// FastAPI/Pydantic 422s carry a list of {loc, msg}; turn it into one
+// readable line ("login_recipe.steps.0: step 'fill' needs: value") instead
+// of showing the raw JSON to the user.
+function formatDetail(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((d) => {
+        const item = d as { loc?: unknown[]; msg?: string };
+        const loc = (item.loc ?? []).filter((x) => x !== "body").join(".");
+        const msg = (item.msg ?? JSON.stringify(d)).replace(/^Value error, /, "");
+        return loc ? `${loc}: ${msg}` : msg;
+      })
+      .join("; ");
+  }
+  return JSON.stringify(detail);
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -88,7 +106,7 @@ async function request<T>(
     let detail = `${res.status} ${res.statusText}`;
     try {
       const data = await res.json();
-      if (data?.detail) detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+      if (data?.detail) detail = formatDetail(data.detail);
     } catch {
       /* non-JSON error body */
     }
@@ -126,6 +144,8 @@ export const api = {
     }),
   listScopeRules: (targetId: string) =>
     request<ScopeRule[]>(`/targets/${targetId}/scope-rules`),
+  deleteScopeRule: (targetId: string, ruleId: string) =>
+    request<void>(`/targets/${targetId}/scope-rules/${ruleId}`, { method: "DELETE" }),
   createScopeRule: (
     targetId: string,
     body: { kind: string; pattern: string; effect: string; label?: string },
@@ -135,6 +155,9 @@ export const api = {
   listPersonas: (targetId: string) => request<Persona[]>(`/targets/${targetId}/personas`),
   createPersona: (targetId: string, body: unknown) =>
     request<Persona>(`/targets/${targetId}/personas`, { method: "POST", body }),
+  // Set or replace an existing persona's login recipe and/or password.
+  updatePersonaLogin: (targetId: string, personaId: string, body: unknown) =>
+    request<Persona>(`/targets/${targetId}/personas/${personaId}`, { method: "PATCH", body }),
 
   // Scans.
   listScans: (targetId: string) => request<Scan[]>(`/targets/${targetId}/scans`),

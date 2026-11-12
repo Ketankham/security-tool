@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     # deployment. See routers/quick_scan.py's module docstring.
     enable_quick_scan: bool = False
 
+    # The ownership-verification gate (docs/06-safety-legal-abuse.md §1):
+    # a target must prove domain ownership (DNS TXT / well-known file / meta
+    # tag) and accept authorization before any scan. On by default. A
+    # deployment that only tests client portals it is engaged on may turn it
+    # off (REQUIRE_OWNERSHIP_VERIFICATION=false); the ScopeGuard still
+    # confines every request to the target's own hosts + scope rules.
+    # Must match the worker's setting.
+    require_ownership_verification: bool = True
+
     # Clerk (control-plane auth). Unset in dev — see app.deps.get_current_org
     # for the stub that stands in until this is wired.
     clerk_secret_key: str = ""

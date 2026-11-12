@@ -13,6 +13,15 @@ class Settings(BaseSettings):
     report_local_path: str = "./data/reports"
     kms_master_key: str = ""  # required for AUTH_ESTABLISHING — see sentinel_core.crypto
 
+    # The ownership-verification gate (docs/06-safety-legal-abuse.md §1):
+    # a target must prove domain ownership (DNS TXT / well-known file / meta
+    # tag) and accept authorization before any scan. On by default. A
+    # deployment that only tests client portals it is engaged on may turn it
+    # off (REQUIRE_OWNERSHIP_VERIFICATION=false); the ScopeGuard still
+    # confines every request to the target's own hosts + scope rules.
+    # Must match the API's setting.
+    require_ownership_verification: bool = True
+
 
 def get_settings() -> Settings:
     return Settings()

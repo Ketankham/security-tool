@@ -54,3 +54,26 @@ async def test_missing_credential_against_real_server_fails_with_keyerror_messag
 
     assert not result.success
     assert "missing credential" in result.error
+
+
+async def test_malformed_selector_fails_cleanly_instead_of_raising(login_server, browser):
+    """A selector typed wrong into the dashboard's login form must surface
+    as an ordinary failed login ("Unavailable: login step failed: ..."),
+    not crash the AUTH_ESTABLISHING phase."""
+    replayer = LoginReplayer(browser)
+    recipe = LoginRecipe(
+        start_url=f"{login_server}/login",
+        steps=(
+            LoginStep(action="fill", selector="input[name=username", value="alice"),  # no "]"
+            LoginStep(action="fill_secret", selector="input[name=password]", credential_ref="pw"),
+            LoginStep(action="click", selector="button[type=submit]"),
+        ),
+        success_assertion=SuccessAssertion(kind="url_contains", value="/dashboard"),
+    )
+    credentials = {"pw": Credential(ref="pw", secret="correct-horse-battery-staple")}
+
+    result = await replayer.replay(recipe, credentials=credentials)
+
+    assert not result.success
+    assert result.error is not None
+    assert result.error.startswith("login step failed:")
