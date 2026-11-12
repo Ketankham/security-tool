@@ -46,6 +46,20 @@ services:
     volumes:
       - ./data:/app/data
 
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.web
+      args:
+        # Baked into the client bundle at build time — the URL the browser
+        # uses to reach the API. For local dev that's the host-published
+        # api port, not the compose-internal hostname.
+        NEXT_PUBLIC_API_BASE: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
   worker:
     build:
       context: .

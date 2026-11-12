@@ -1,4 +1,26 @@
 # Built from the repo root: docker build -f infra/docker/Dockerfile.worker .
+
+# --- Recon binaries (ADR-0002: adopt MIT-licensed ProjectDiscovery tools) ----
+# The recon phase shells out to these when present and degrades without them
+# ("subfinder is not installed — subdomain discovery limited to the root
+# domain"). Built from source with `go install` rather than downloading release
+# zips: every module, and the Go toolchain itself, is then verified against
+# Go's public checksum database, so a tampered download fails the build.
+# Static (CGO off), so they run on the Debian-based runtime image below.
+#
+# Versions are pinned; bump them deliberately. tlsx needs Go >= 1.27.
+#   subfinder v2.17.0 (2026-10-08) — passive subdomain enumeration
+#   tlsx      v1.4.4  (2026-10-26) — TLS / cipher grading
+# ProjectDiscovery's `httpx` is deliberately NOT installed: the venv's Python
+# `httpx` console script shadows that name on PATH, and the recon phase's
+# built-in Python prober covers HTTP probing (sentinel_recon/http_probe.py).
+FROM golang:1.27-bookworm AS recon-tools
+ENV CGO_ENABLED=0 GOBIN=/out GOFLAGS=-trimpath
+RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@v2.17.0 \
+    && go install github.com/projectdiscovery/tlsx/cmd/tlsx@v1.4.4 \
+    && /out/subfinder -version \
+    && /out/tlsx -version
+
 FROM python:3.11-slim AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -17,4 +39,15 @@ RUN uv sync --frozen --package sentinel-worker --no-dev
 
 ENV PATH="/app/.venv/bin:${PATH}"
 
-CMD ["celery", "-A", "sentinel_worker_app.celery_app", "worker", "--workdir", "apps/worker", "--loglevel", "INFO"]
+COPY --from=recon-tools /out/subfinder /out/tlsx /usr/local/bin/
+
+# The AUTH_ESTABLISHING and CRAWLING phases drive a real browser
+# (sentinel-auth / sentinel-crawler use Playwright). Install the Chromium
+# revision matching the locked playwright package, plus its system libs, into
+# a fixed path so it is found regardless of the worker's --workdir.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+
+# --workdir is a global celery option: it must come before the subcommand.
+CMD ["celery", "--workdir", "apps/worker", "-A", "sentinel_worker_app.celery_app", "worker", "--loglevel", "INFO"]

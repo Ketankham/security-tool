@@ -1,0 +1,25 @@
+# Shared reverse proxy for the Hetzner box. Deployed to /opt/edge by the
+# Sentinel deploy (infra/deploy/remote-deploy.sh) but owned by no single app:
+# it fronts the accounting app too. See infra/deploy/README.md.
+name: edge
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    # Host networking: Caddy binds 80/443 directly and reaches the apps on
+    # 127.0.0.1. It publishes no Docker ports, so the accounting deploy's
+    # `docker ps --filter publish=8000 | xargs docker stop` never touches it.
+    network_mode: host
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:-accsysn.duckdns.org}
+    volumes:
+      # Mount the directory, not the single file: scp replaces the file
+      # (new inode), and a single-file bind mount would keep the old one.
+      - ./conf:/etc/caddy:ro
+      - caddy_data:/data      # certificates — keep, or hit LE rate limits
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
