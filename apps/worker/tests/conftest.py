@@ -56,6 +56,12 @@ _persona_app_module = _load_module(
 )
 persona_app = _persona_app_module.app
 
+_multi_tenant_app_module = _load_module(
+    "sentinel_worker_test_fixture_multi_tenant_app",
+    Path(__file__).parent / "fixtures" / "multi_tenant_app.py",
+)
+multi_tenant_app = _multi_tenant_app_module.app
+
 
 def _free_port() -> int:
     s = socket.socket()
@@ -84,6 +90,15 @@ async def persona_app_server():
 
 
 @pytest.fixture
+async def multi_tenant_app_server():
+    port = _free_port()
+    server, task = await _serve(multi_tenant_app, port)
+    yield f"http://127.0.0.1:{port}"
+    server.should_exit = True
+    await task
+
+
+@pytest.fixture
 async def browser():
     async with async_playwright() as p:
         b = await p.chromium.launch(**_chromium_launch_kwargs())
@@ -103,7 +118,13 @@ async def redis_client():
     await client.aclose()
 
 
-_INTEGRATION_FIXTURES = {"db_engine", "redis_client", "browser", "persona_app_server"}
+_INTEGRATION_FIXTURES = {
+    "db_engine",
+    "redis_client",
+    "browser",
+    "persona_app_server",
+    "multi_tenant_app_server",
+}
 
 
 def pytest_collection_modifyitems(config, items):

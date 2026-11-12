@@ -1,8 +1,13 @@
-"""AI narrative + deterministic data -> dashboard, PDF, SARIF, attestation letters. Roadmap: M3.
+"""AI narrative + deterministic data -> dashboard, PDF, SARIF, attestation letters.
 
-Not yet implemented — this package exists so the workspace, imports, and CI
-wiring are correct from day one (docs/05-v1-roadmap.md, M0 exit criteria).
-Implementation lands on the milestone named above.
+M2 slice 2 (this milestone): ScanReport, a structured JSON summary of what a
+scan found (recon assets, crawled surface, authorization findings). PDF,
+SARIF, the AI-written narrative, and the attestation letter are M3/Verified-
+tier work — not implemented yet.
 """
+
+from .models import ReportAsset, ReportEndpoint, ReportFinding, ScanReport
+
+__all__ = ["ScanReport", "ReportAsset", "ReportEndpoint", "ReportFinding"]
 
 __version__ = "0.1.0"
