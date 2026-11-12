@@ -123,8 +123,10 @@ Hetzner Cloud firewall (in the Hetzner console) is in use, allow 443 there too.
   up with zero restarts.
 - **Memory.** The worker runs one scan at a time (`--concurrency=1`), is capped
   at 2 GB, and has a 512 MB `/dev/shm` (Chromium crashes on Docker's 64 MB default).
-- **Recon binaries.** `subfinder` / `httpx` / `tlsx` aren't in the worker image;
-  recon uses its documented degrade path without them.
+- **Recon binaries.** `subfinder` and `tlsx` are built into the worker image
+  (pinned versions, verified against Go's checksum database). ProjectDiscovery's
+  `httpx` is left out on purpose: the venv's Python `httpx` script has the same
+  name, and recon's built-in Python prober handles HTTP probing.
 
 ## Public exposure: read before relying on it
 
