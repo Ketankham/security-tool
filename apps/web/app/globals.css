@@ -478,3 +478,13 @@ textarea {
   max-width: 100%;
   resize: vertical;
 }
+
+/* Inline validation (QA #28). */
+.field-error {
+  color: var(--bad);
+  font-size: 0.82rem;
+  margin-top: 4px;
+}
+input[aria-invalid="true"] {
+  border-color: var(--bad);
+}

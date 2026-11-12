@@ -63,6 +63,10 @@ class LoginRecipeIn(BaseModel):
     success_assertion: SuccessAssertionIn
     strategy: Literal["form"] = "form"
     max_duration_s: float = Field(default=30.0, gt=0)
+    # Explicit confirmation that the login page legitimately lives on a
+    # host outside the target's domain (SSO). Without it, the API and the
+    # worker refuse any navigation off the target (sentinel_core.login_safety).
+    allow_off_domain: bool = False
 
     @model_validator(mode="after")
     def _one_secret(self) -> LoginRecipeIn:
@@ -114,6 +118,15 @@ class PersonaLoginUpdate(BaseModel):
         if self.login_recipe is None and self.credential is None:
             raise ValueError("provide login_recipe and/or credential")
         return self
+
+
+class PersonaLoginOut(BaseModel):
+    """The saved recipe, for prefilling "Edit login" (QA #24). Never holds
+    the password: recipes only reference it by credential_ref, and this
+    response says whether one is stored, not what it is."""
+
+    login_recipe: dict | None
+    has_password: bool
 
 
 class PersonaOut(BaseModel):

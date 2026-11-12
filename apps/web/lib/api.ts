@@ -15,6 +15,7 @@ import type {
   ScopeRule,
   Target,
 } from "./types";
+import type { LoginRecipe } from "@/components/LoginRecipeFields";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
@@ -155,6 +156,11 @@ export const api = {
   listPersonas: (targetId: string) => request<Persona[]>(`/targets/${targetId}/personas`),
   createPersona: (targetId: string, body: unknown) =>
     request<Persona>(`/targets/${targetId}/personas`, { method: "POST", body }),
+  // The saved login recipe (never the password) for prefilling "Edit login".
+  getPersonaLogin: (targetId: string, personaId: string) =>
+    request<{ login_recipe: LoginRecipe | null; has_password: boolean }>(
+      `/targets/${targetId}/personas/${personaId}/login`,
+    ),
   // Set or replace an existing persona's login recipe and/or password.
   updatePersonaLogin: (targetId: string, personaId: string, body: unknown) =>
     request<Persona>(`/targets/${targetId}/personas/${personaId}`, { method: "PATCH", body }),

@@ -2,13 +2,19 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { use, useState } from "react";
+import { use, useEffect, useState } from "react";
 import { OrgGate } from "../../OrgGate";
 import { ApiError, api } from "@/lib/api";
 import { usePoll } from "@/lib/usePoll";
 import { STATE_LABEL, isFailureState, isTerminal } from "@/lib/scan";
 import type { OwnershipChallenge, OwnershipMethod, Persona, Scan, ScopeRule, Target } from "@/lib/types";
-import { EMPTY_LOGIN, LoginRecipeFields, buildLogin, type LoginForm } from "@/components/LoginRecipeFields";
+import {
+  EMPTY_LOGIN,
+  LoginRecipeFields,
+  buildLogin,
+  loginFormFromRecipe,
+  type LoginForm,
+} from "@/components/LoginRecipeFields";
 
 export default function TargetPage({ params }: { params: Promise<{ targetId: string }> }) {
   const { targetId } = use(params);
@@ -407,18 +413,42 @@ function EditLogin({
   onDone: () => void;
 }) {
   const [login, setLogin] = useState<LoginForm>(EMPTY_LOGIN);
+  const [hasPassword, setHasPassword] = useState(false);
+  const [loaded, setLoaded] = useState(!persona.has_login_recipe);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showErrors, setShowErrors] = useState(false);
+
+  // QA #24: open with the saved recipe filled in (never the password: the
+  // API only says whether one is stored).
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getPersonaLogin(targetId, persona.id)
+      .then((res) => {
+        if (cancelled) return;
+        // Only replace the form when there is something saved to show: a
+        // persona without a recipe is editable immediately, and its fetch
+        // must not wipe what the user has already typed.
+        if (res.login_recipe) setLogin(loginFormFromRecipe(res.login_recipe));
+        setHasPassword(res.has_password);
+      })
+      .catch((e) => !cancelled && setError(e instanceof ApiError ? e.detail : String(e)))
+      .finally(() => !cancelled && setLoaded(true));
+    return () => {
+      cancelled = true;
+    };
+  }, [targetId, persona.id]);
 
   async function save(e?: React.FormEvent) {
     e?.preventDefault();
     if (busy) return;
-    // The API never echoes a stored recipe back, so the editor always
-    // starts blank and replaces the whole recipe. The password may be left
-    // blank on a persona that already logs in: the stored one is kept.
-    const built = buildLogin(login, !persona.has_login_recipe);
+    setShowErrors(true);
+    // Saving replaces the whole recipe. The password may be left blank when
+    // one is already stored: the stored one is kept.
+    const built = buildLogin(login, !hasPassword, rootDomain);
     if (!built.ok) {
-      setError(built.error);
+      setError("Fix the highlighted fields.");
       return;
     }
     setBusy(true);
@@ -440,24 +470,32 @@ function EditLogin({
       onSubmit={save}
       style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, margin: "6px 0 10px" }}
     >
-      {persona.has_login_recipe && (
-        <div className="hint" style={{ marginBottom: 6 }}>
-          Saving replaces this persona&apos;s whole login recipe. Leave the password blank to keep the
-          current one.
-        </div>
+      {!loaded ? (
+        <div className="hint">Loading saved login…</div>
+      ) : (
+        <>
+          {hasPassword && (
+            <div className="hint" style={{ marginBottom: 6 }}>
+              Showing the saved login. The password is never shown: leave it blank to keep the current
+              one.
+            </div>
+          )}
+          {error && <div className="error-box" style={{ marginBottom: 8 }}>{error}</div>}
+          <LoginRecipeFields
+            value={login}
+            onChange={setLogin}
+            rootDomain={rootDomain}
+            passwordRequired={!hasPassword}
+            showErrors={showErrors}
+            passwordHint={hasPassword ? "leave blank to keep current" : undefined}
+          />
+          <div className="row" style={{ marginTop: 12 }}>
+            <button className="btn-primary" type="submit" disabled={busy}>
+              {busy ? "Saving…" : "Save login"}
+            </button>
+          </div>
+        </>
       )}
-      {error && <div className="error-box" style={{ marginBottom: 8 }}>{error}</div>}
-      <LoginRecipeFields
-        value={login}
-        onChange={setLogin}
-        rootDomain={rootDomain}
-        passwordHint={persona.has_login_recipe ? "leave blank to keep current" : undefined}
-      />
-      <div className="row" style={{ marginTop: 12 }}>
-        <button className="btn-primary" type="submit" disabled={busy}>
-          {busy ? "Saving…" : "Save login"}
-        </button>
-      </div>
     </form>
   );
 }
@@ -478,6 +516,7 @@ function AddPersona({
   const [trust, setTrust] = useState(0);
   const [tenant, setTenant] = useState("");
   const [withLogin, setWithLogin] = useState(true);
+  const [showErrors, setShowErrors] = useState(false);
   const [login, setLogin] = useState<LoginForm>(EMPTY_LOGIN);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -498,9 +537,10 @@ function AddPersona({
       expected_denied: [],
     };
     if (withLogin) {
-      const built = buildLogin(login, true);
+      setShowErrors(true);
+      const built = buildLogin(login, true, rootDomain);
       if (!built.ok) {
-        setError(built.error);
+        setError("Fix the highlighted login fields.");
         return;
       }
       body.login_strategy = "form";
@@ -566,7 +606,13 @@ function AddPersona({
         Log in as this persona
       </label>
       {withLogin ? (
-        <LoginRecipeFields value={login} onChange={setLogin} rootDomain={rootDomain} />
+        <LoginRecipeFields
+          value={login}
+          onChange={setLogin}
+          rootDomain={rootDomain}
+          passwordRequired
+          showErrors={showErrors}
+        />
       ) : (
         <div className="hint">
           Without a login this persona browses anonymously, which is useful as the &quot;logged-out
