@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sentinel_db.enums import CredentialKind, LoginStrategy
 
 
@@ -13,6 +13,20 @@ class CredentialCreate(BaseModel):
 
     kind: CredentialKind
     secret: str = Field(min_length=1, repr=False)
+
+
+# Which fields each login-step action needs. The replayer
+# (sentinel_auth.replay) asserts these at scan time; checking them here turns
+# a hand-written bad recipe into a 422 at save time instead of a failed login
+# mid-scan.
+_STEP_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "goto": ("value",),
+    "fill": ("selector", "value"),
+    "fill_secret": ("selector", "credential_ref"),
+    "click": ("selector",),
+    "wait_for_selector": ("selector",),
+    "wait_for_url": ("value",),
+}
 
 
 class LoginStepIn(BaseModel):
@@ -26,6 +40,15 @@ class LoginStepIn(BaseModel):
     value: str | None = None
     credential_ref: str | None = None
     timeout_s: float = Field(default=10.0, gt=0)
+
+    @model_validator(mode="after")
+    def _fields_for_action(self) -> LoginStepIn:
+        missing = [f for f in _STEP_REQUIRED_FIELDS[self.action] if not getattr(self, f)]
+        if missing:
+            raise ValueError(f"step '{self.action}' needs: {', '.join(missing)}")
+        if self.action == "fill" and self.credential_ref:
+            raise ValueError("use 'fill_secret' (not 'fill') for steps that type a credential")
+        return self
 
 
 class SuccessAssertionIn(BaseModel):
@@ -41,6 +64,18 @@ class LoginRecipeIn(BaseModel):
     strategy: Literal["form"] = "form"
     max_duration_s: float = Field(default=30.0, gt=0)
 
+    @model_validator(mode="after")
+    def _one_secret(self) -> LoginRecipeIn:
+        """The worker attaches the persona's single stored credential to the
+        recipe's fill_secret step (worker auth_adapter.establish_persona), so
+        a recipe needs exactly one credential_ref to bind it to."""
+        refs = {s.credential_ref for s in self.steps if s.action == "fill_secret"}
+        if not refs:
+            raise ValueError("login recipe needs a 'fill_secret' step for the password")
+        if len(refs) > 1:
+            raise ValueError("all 'fill_secret' steps must use the same credential_ref")
+        return self
+
 
 class PersonaCreate(BaseModel):
     label: str = Field(min_length=1, max_length=200)
@@ -51,6 +86,29 @@ class PersonaCreate(BaseModel):
     credential: CredentialCreate | None = None
     login_recipe: LoginRecipeIn | None = None
     expected_denied: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _recipe_needs_password(self) -> PersonaCreate:
+        if self.login_recipe is not None and self.credential is None:
+            raise ValueError(
+                "a login recipe needs a password (credential) to fill its 'fill_secret' step"
+            )
+        return self
+
+
+class PersonaLoginUpdate(BaseModel):
+    """Set or replace an existing persona's login. Personas can't be deleted
+    (transcripts reference them), so this is how a persona created without a
+    recipe — or with a wrong one, or a changed password — gets fixed."""
+
+    login_recipe: LoginRecipeIn | None = None
+    credential: CredentialCreate | None = None
+
+    @model_validator(mode="after")
+    def _something_to_change(self) -> PersonaLoginUpdate:
+        if self.login_recipe is None and self.credential is None:
+            raise ValueError("provide login_recipe and/or credential")
+        return self
 
 
 class PersonaOut(BaseModel):

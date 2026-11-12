@@ -8,6 +8,7 @@ import { ApiError, api } from "@/lib/api";
 import { usePoll } from "@/lib/usePoll";
 import { STATE_LABEL, isFailureState, isTerminal } from "@/lib/scan";
 import type { OwnershipChallenge, OwnershipMethod, Persona, Scan, ScopeRule, Target } from "@/lib/types";
+import { EMPTY_LOGIN, LoginRecipeFields, buildLogin, type LoginForm } from "@/components/LoginRecipeFields";
 
 export default function TargetPage({ params }: { params: Promise<{ targetId: string }> }) {
   const { targetId } = use(params);
@@ -37,7 +38,7 @@ function TargetDetail({ targetId }: { targetId: string }) {
 
           <OwnershipCard target={target} onChange={refresh} />
           <ScopeCard targetId={targetId} />
-          <PersonasCard targetId={targetId} />
+          <PersonasCard targetId={targetId} rootDomain={target.root_domain} />
           <ScansCard target={target} />
         </>
       )}
@@ -97,7 +98,7 @@ function OwnershipCard({ target, onChange }: { target: Target; onChange: () => v
       <h2>
         Ownership & authorization{" "}
         {target.is_scannable ? (
-          <span className="badge tone-ok">Ready</span>
+          <span className="badge tone-ok" title="Checked on the next scan">Login set</span>
         ) : (
           <span className="badge tone-pending">Incomplete</span>
         )}
@@ -235,12 +236,13 @@ function ScopeCard({ targetId }: { targetId: string }) {
   );
 }
 
-function PersonasCard({ targetId }: { targetId: string }) {
+function PersonasCard({ targetId, rootDomain }: { targetId: string; rootDomain: string }) {
   const { data: personas, error, refresh } = usePoll<Persona[]>(
     () => api.listPersonas(targetId),
     30000,
   );
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
 
   return (
     <div className="card">
@@ -255,23 +257,46 @@ function PersonasCard({ targetId }: { targetId: string }) {
       {personas && personas.length > 0 && (
         <div className="list" style={{ margin: "10px 0" }}>
           {personas.map((p) => (
-            <div className="list-item" key={p.id}>
-              <div className="grow">
-                <div className="title">
-                  {p.label} <span className="hint">({p.role_name}, trust {p.trust_rank})</span>
+            <div key={p.id}>
+              <div className="list-item">
+                <div className="grow">
+                  <div className="title">
+                    {p.label} <span className="hint">({p.role_name}, trust {p.trust_rank})</span>
+                  </div>
+                  <div className="sub">
+                    {p.tenant_key ? `tenant ${p.tenant_key}` : "no tenant"}
+                    {p.has_login_recipe ? " · logs in with a recipe" : " · no login — scans as anonymous"}
+                  </div>
+                  {!p.is_available && p.unavailable_reason && (
+                    <div className="sub" style={{ color: "var(--bad, #f87171)" }}>
+                      Last login failed: {p.unavailable_reason}
+                    </div>
+                  )}
                 </div>
-                <div className="sub">
-                  {p.tenant_key ? `tenant ${p.tenant_key}` : "no tenant"}
-                  {p.login_strategy ? ` · ${p.login_strategy}` : ""}
-                  {p.has_login_recipe ? " · has login recipe" : " · no login recipe"}
-                </div>
+                {!p.has_login_recipe ? (
+                  <span className="badge tone-muted">No login</span>
+                ) : p.is_available ? (
+                  <span className="badge tone-ok" title="Checked on the next scan">Login set</span>
+                ) : (
+                  <span className="badge tone-bad">Login failed</span>
+                )}
+                <button
+                  className="btn-sm"
+                  onClick={() => setEditing(editing === p.id ? null : p.id)}
+                >
+                  {editing === p.id ? "Close" : p.has_login_recipe ? "Edit login" : "Set up login"}
+                </button>
               </div>
-              {p.is_available ? (
-                <span className="badge tone-ok">Available</span>
-              ) : (
-                <span className="badge tone-bad" title={p.unavailable_reason ?? ""}>
-                  Unavailable
-                </span>
+              {editing === p.id && (
+                <EditLogin
+                  targetId={targetId}
+                  rootDomain={rootDomain}
+                  persona={p}
+                  onDone={() => {
+                    setEditing(null);
+                    refresh();
+                  }}
+                />
               )}
             </div>
           ))}
@@ -279,7 +304,12 @@ function PersonasCard({ targetId }: { targetId: string }) {
       )}
 
       {open ? (
-        <AddPersona targetId={targetId} onDone={() => { setOpen(false); refresh(); }} onCancel={() => setOpen(false)} />
+        <AddPersona
+          targetId={targetId}
+          rootDomain={rootDomain}
+          onDone={() => { setOpen(false); refresh(); }}
+          onCancel={() => setOpen(false)}
+        />
       ) : (
         <button onClick={() => setOpen(true)}>+ Add persona</button>
       )}
@@ -287,12 +317,76 @@ function PersonasCard({ targetId }: { targetId: string }) {
   );
 }
 
+function EditLogin({
+  targetId,
+  rootDomain,
+  persona,
+  onDone,
+}: {
+  targetId: string;
+  rootDomain: string;
+  persona: Persona;
+  onDone: () => void;
+}) {
+  const [login, setLogin] = useState<LoginForm>(EMPTY_LOGIN);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    // The API never echoes a stored recipe back, so the editor always
+    // starts blank and replaces the whole recipe. The password may be left
+    // blank on a persona that already logs in: the stored one is kept.
+    const built = buildLogin(login, !persona.has_login_recipe);
+    if (!built.ok) {
+      setError(built.error);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const body: Record<string, unknown> = { login_recipe: built.recipe };
+      if (built.password) body.credential = { kind: "password", secret: built.password };
+      await api.updatePersonaLogin(targetId, persona.id, body);
+      onDone();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.detail : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, margin: "6px 0 10px" }}>
+      {persona.has_login_recipe && (
+        <div className="hint" style={{ marginBottom: 6 }}>
+          Saving replaces this persona&apos;s whole login recipe. Leave the password blank to keep the
+          current one.
+        </div>
+      )}
+      {error && <div className="error-box" style={{ marginBottom: 8 }}>{error}</div>}
+      <LoginRecipeFields
+        value={login}
+        onChange={setLogin}
+        rootDomain={rootDomain}
+        passwordHint={persona.has_login_recipe ? "leave blank to keep current" : undefined}
+      />
+      <div className="row" style={{ marginTop: 12 }}>
+        <button className="btn-primary" disabled={busy} onClick={save}>
+          {busy ? "Saving…" : "Save login"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AddPersona({
   targetId,
+  rootDomain,
   onDone,
   onCancel,
 }: {
   targetId: string;
+  rootDomain: string;
   onDone: () => void;
   onCancel: () => void;
 }) {
@@ -300,26 +394,32 @@ function AddPersona({
   const [role, setRole] = useState("");
   const [trust, setTrust] = useState(0);
   const [tenant, setTenant] = useState("");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+  const [withLogin, setWithLogin] = useState(true);
+  const [login, setLogin] = useState<LoginForm>(EMPTY_LOGIN);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function submit() {
-    setBusy(true);
     setError(null);
-    try {
-      const body: Record<string, unknown> = {
-        label: label.trim(),
-        role_name: role.trim(),
-        trust_rank: trust,
-        tenant_key: tenant.trim() || null,
-        expected_denied: [],
-      };
-      if (password.trim()) {
-        body.login_strategy = "form";
-        body.credential = { kind: "password", secret: password };
+    const body: Record<string, unknown> = {
+      label: label.trim(),
+      role_name: role.trim(),
+      trust_rank: trust,
+      tenant_key: tenant.trim() || null,
+      expected_denied: [],
+    };
+    if (withLogin) {
+      const built = buildLogin(login, true);
+      if (!built.ok) {
+        setError(built.error);
+        return;
       }
+      body.login_strategy = "form";
+      body.login_recipe = built.recipe;
+      body.credential = { kind: "password", secret: built.password };
+    }
+    setBusy(true);
+    try {
       await api.createPersona(targetId, body);
       onDone();
     } catch (e) {
@@ -357,20 +457,23 @@ function AddPersona({
           <input value={tenant} placeholder="tenant-a" onChange={(e) => setTenant(e.target.value)} />
         </div>
       </div>
-      <div className="row">
-        <div>
-          <label>Username (optional)</label>
-          <input value={username} autoComplete="off" onChange={(e) => setUsername(e.target.value)} />
+      <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 14 }}>
+        <input
+          type="checkbox"
+          checked={withLogin}
+          onChange={(e) => setWithLogin(e.target.checked)}
+          style={{ width: "auto" }}
+        />
+        Log in as this persona
+      </label>
+      {withLogin ? (
+        <LoginRecipeFields value={login} onChange={setLogin} rootDomain={rootDomain} />
+      ) : (
+        <div className="hint">
+          Without a login this persona browses anonymously, which is useful as the &quot;logged-out
+          visitor&quot; to compare against. Authorization checks need at least two logged-in personas.
         </div>
-        <div>
-          <label>Password (optional, stored encrypted)</label>
-          <input type="password" value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />
-        </div>
-      </div>
-      <div className="hint" style={{ marginTop: 6 }}>
-        A full login recipe (the exact steps to log in) is recorded separately;
-        a password here seeds a form-login credential.
-      </div>
+      )}
       <div className="row" style={{ marginTop: 12 }}>
         <button className="btn-primary" disabled={busy || !label.trim() || !role.trim()} onClick={submit}>
           {busy ? "Saving…" : "Save persona"}
