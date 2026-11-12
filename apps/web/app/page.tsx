@@ -72,6 +72,30 @@ function previewDomain(raw: string): string {
   return v.replace(/\.+$/, "").toLowerCase();
 }
 
+// QA #26: the same rules the API enforces (services/domains.py), checked
+// as you type so Add stays disabled instead of failing after submit.
+function domainProblem(raw: string): string | null {
+  const v = raw.trim();
+  if (!v) return null;
+  let netloc = v;
+  if (v.includes("://")) netloc = v.split("://")[1] ?? "";
+  netloc = netloc.split(/[/?#]/)[0] ?? "";
+  if (netloc.includes("@")) return "Enter just the domain, without a username or password.";
+  if (netloc.startsWith("[")) return "Enter a domain name, not an IP address.";
+  if (netloc.includes(":")) return "Leave out the port (e.g. app.example.com, not app.example.com:8443).";
+  const host = netloc.replace(/\.+$/, "").toLowerCase();
+  if (!host) return "Enter a domain, e.g. app.example.com.";
+  if (host.includes("*")) return "Enter one domain without wildcards; subdomains are included automatically.";
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return "Enter a domain name, not an IP address.";
+  const labels = host.split(".");
+  if (labels.length < 2) return "Enter a full domain such as app.example.com ('localhost' can't be scanned).";
+  if (host.length > 253) return "That domain is too long.";
+  const label = /^[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?$/u;
+  if (!labels.every((l) => label.test(l))) return "That isn't a valid domain name (letters, digits and hyphens only).";
+  if (/^\d+$/.test(labels[labels.length - 1])) return "That isn't a valid domain name.";
+  return null;
+}
+
 function AddTarget({ onAdded }: { onAdded: () => void }) {
   const [open, setOpen] = useState(false);
   const [domain, setDomain] = useState("");
@@ -87,6 +111,7 @@ function AddTarget({ onAdded }: { onAdded: () => void }) {
       setError("Enter the root domain, e.g. app.example.com.");
       return;
     }
+    if (domainProblem(domain)) return;
     setBusy(true);
     setError(null);
     try {
@@ -117,6 +142,7 @@ function AddTarget({ onAdded }: { onAdded: () => void }) {
   }
 
   const preview = previewDomain(domain);
+  const problem = domainProblem(domain);
   return (
     <form className="card" onSubmit={submit}>
       <h2>Add target</h2>
@@ -129,13 +155,21 @@ function AddTarget({ onAdded }: { onAdded: () => void }) {
             required
             className="mono"
             placeholder="app.example.com"
-            onChange={(e) => setDomain(e.target.value)}
+            aria-invalid={!!problem}
+            onChange={(e) => {
+              setError(null);
+              setDomain(e.target.value);
+            }}
           />
+          {problem ? (
+            <div className="field-error">{problem}</div>
+          ) : (
           <div className="hint" style={{ marginTop: 4 }}>
             {preview && preview !== domain.trim()
               ? <>Saved as <span className="mono">{preview}</span> (domain only).</>
               : <>Just the domain, e.g. <span className="mono">app.example.com</span>. Its subdomains are included.</>}
           </div>
+          )}
         </div>
         <div>
           <label>Display name</label>
@@ -158,7 +192,7 @@ function AddTarget({ onAdded }: { onAdded: () => void }) {
         (payments, deletes) with scope rules after adding the target.
       </div>
       <div className="row" style={{ marginTop: 14 }}>
-        <button className="btn-primary" type="submit" disabled={busy}>
+        <button className="btn-primary" type="submit" disabled={busy || !domain.trim() || !!problem}>
           {busy ? "Adding…" : "Add"}
         </button>
         <button type="button" onClick={() => setOpen(false)}>Cancel</button>

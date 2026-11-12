@@ -58,7 +58,10 @@ function OrgSetup({ onDone }: { onDone: (id: string) => void }) {
   const [slugTouched, setSlugTouched] = useState(false);
   const [pasteId, setPasteId] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Errors belong to the form they came from and clear as soon as that form
+  // is edited, so an emptied chooser never shows a stale message (QA #27).
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [pasteError, setPasteError] = useState<string | null>(null);
 
   function pick(id: string) {
     setOrgId(id);
@@ -66,28 +69,31 @@ function OrgSetup({ onDone }: { onDone: (id: string) => void }) {
     onDone(id);
   }
 
+  // QA #25: invalid slugs are reported (not silently rewritten) and keep
+  // Create disabled until fixed.
   const slugProblem = !slug
     ? "Enter a slug."
-    : slug.length < 2
-      ? "The slug needs at least 2 characters."
-      : !SLUG_RE.test(slug)
-        ? "Use lower-case letters and digits, with single hyphens between words."
-        : null;
+    : /[A-Z]/.test(slug)
+      ? "Use lower-case letters only."
+      : /\s/.test(slug)
+        ? "No spaces: join words with hyphens, e.g. acme-inc."
+        : slug.length < 2
+          ? "The slug needs at least 2 characters."
+          : !SLUG_RE.test(slug)
+            ? "Use letters and digits, with single hyphens between words."
+            : null;
   const createProblem = !name.trim() ? "Enter a name." : slugProblem;
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
-    if (createProblem || busy) {
-      setError(createProblem);
-      return;
-    }
+    if (createProblem || busy) return;
     setBusy(true);
-    setError(null);
+    setCreateError(null);
     try {
       const org = await api.createOrg(name.trim(), slug);
       pick(org.id);
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : String(err));
+      setCreateError(err instanceof ApiError ? err.detail : String(err));
     } finally {
       setBusy(false);
     }
@@ -99,18 +105,18 @@ function OrgSetup({ onDone }: { onDone: (id: string) => void }) {
     e.preventDefault();
     const id = pasteId.trim();
     if (!UUID_RE.test(id)) {
-      setError("That isn't an organization id. It looks like 6fa9094d-1c2e-4b8a-9f0e-0123456789ab.");
+      setPasteError("That isn't an organization id. It looks like 6fa9094d-1c2e-4b8a-9f0e-0123456789ab.");
       return;
     }
     setBusy(true);
-    setError(null);
+    setPasteError(null);
     setOrgId(id);
     try {
       await api.me();
       pick(id);
     } catch (err) {
       clearOrgId();
-      setError(
+      setPasteError(
         err instanceof ApiError && err.status === 404
           ? "No organization has that id."
           : err instanceof ApiError
@@ -131,10 +137,9 @@ function OrgSetup({ onDone }: { onDone: (id: string) => void }) {
         organization&apos;s data. Keep it private.
       </p>
 
-      {error && <div className="error-box" style={{ marginBottom: 12 }}>{error}</div>}
-
       <h3 style={{ marginTop: 18 }}>Create new</h3>
       <form onSubmit={create}>
+        {createError && <div className="error-box" style={{ marginBottom: 8 }}>{createError}</div>}
         <div className="row">
           <div style={{ flex: 2 }}>
             <label>Name *</label>
@@ -144,6 +149,7 @@ function OrgSetup({ onDone }: { onDone: (id: string) => void }) {
               maxLength={120}
               placeholder="Acme Inc."
               onChange={(e) => {
+                setCreateError(null);
                 setName(e.target.value);
                 if (!slugTouched) setSlug(slugify(e.target.value));
               }}
@@ -157,9 +163,11 @@ function OrgSetup({ onDone }: { onDone: (id: string) => void }) {
               maxLength={63}
               placeholder="acme"
               className="mono"
+              aria-invalid={!!(slug && slugProblem)}
               onChange={(e) => {
+                setCreateError(null);
                 setSlugTouched(true);
-                setSlug(e.target.value.toLowerCase());
+                setSlug(e.target.value);
               }}
             />
           </div>
@@ -168,11 +176,13 @@ function OrgSetup({ onDone }: { onDone: (id: string) => void }) {
           The slug is a short, unique, URL-friendly name, e.g. <span className="mono">acme-inc</span>.
         </div>
         <div style={{ marginTop: 12 }}>
-          <button className="btn-primary" type="submit" disabled={busy}>
+          <button className="btn-primary" type="submit" disabled={busy || !!createProblem}>
             {busy ? "Creating…" : "Create organization"}
           </button>
-          {createProblem && (name || slug) && (
-            <span className="hint" style={{ marginLeft: 10 }}>{createProblem}</span>
+          {createProblem && (
+            <span className={name || slug ? "field-error" : "hint"} style={{ marginLeft: 10, display: "inline" }}>
+              {createProblem}
+            </span>
           )}
         </div>
       </form>
@@ -184,13 +194,17 @@ function OrgSetup({ onDone }: { onDone: (id: string) => void }) {
             value={pasteId}
             placeholder="00000000-0000-0000-0000-000000000000"
             className="mono"
-            onChange={(e) => setPasteId(e.target.value)}
+            onChange={(e) => {
+              setPasteError(null);
+              setPasteId(e.target.value);
+            }}
           />
         </div>
         <button type="submit" disabled={busy || !pasteId.trim()}>
           Use this org
         </button>
       </form>
+      {pasteError && pasteId.trim() && <div className="field-error">{pasteError}</div>}
       <div className="hint" style={{ marginTop: 4 }}>
         Find it with &quot;Copy id&quot; in the top bar while that organization is selected.
       </div>

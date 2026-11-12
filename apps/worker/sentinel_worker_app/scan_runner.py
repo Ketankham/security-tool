@@ -165,6 +165,7 @@ async def _run_auth_establishing(
                 org_data_key=org_data_key,
                 engine=engine,
                 oracle_probe_url=probe_url,
+                target_root_domain=target.root_domain,
             )
             persona.is_available = result.available
             persona.unavailable_reason = result.unavailable_reason

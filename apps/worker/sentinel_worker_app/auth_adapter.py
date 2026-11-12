@@ -21,6 +21,7 @@ from sentinel_auth import (
 )
 from sentinel_core.crypto import EnvelopeCrypto
 from sentinel_core.http_engine import HttpEngine
+from sentinel_core.login_safety import login_navigation_problems
 from sentinel_db.models import Persona
 
 
@@ -66,6 +67,7 @@ async def establish_persona(
     org_data_key: bytes,
     engine: HttpEngine,
     oracle_probe_url: str,
+    target_root_domain: str,
 ) -> PersonaAuthResult:
     def _unavailable(reason: str) -> PersonaAuthResult:
         return PersonaAuthResult(
@@ -80,6 +82,13 @@ async def establish_persona(
         return _unavailable("No login recipe configured for this persona.")
     if persona.credential is None:
         return _unavailable("No credential configured for this persona.")
+
+    # Re-checked here, before the password is decrypted, so a recipe saved
+    # before the API validated login URLs (QA #23) can never type the
+    # password into a non-http(s) or off-target page.
+    problems = login_navigation_problems(persona.login_recipe, target_root_domain)
+    if problems:
+        return _unavailable("Login blocked: " + "; ".join(problems))
 
     recipe = build_login_recipe(persona.login_recipe)
     secret_ref = next(

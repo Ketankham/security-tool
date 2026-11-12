@@ -230,3 +230,92 @@ async def test_patch_cannot_reach_another_orgs_or_targets_persona(client):
         f"/targets/{target_a['id']}/personas/{uuid.uuid4()}", json=body, headers=headers_a
     )
     assert resp.status_code == 404
+
+
+# --- QA #23: login URLs must be http(s) pages on the target -------------------
+
+
+@pytest.mark.parametrize(
+    ("start_url", "message"),
+    [
+        ("javascript:alert(1)", "must start with http"),
+        ("https://evil.example.org/login", "not on lr.test"),
+    ],
+)
+async def test_unsafe_login_url_is_rejected_on_create_and_patch(client, start_url, message):
+    headers, target = await _org_and_target(client, f"unsafe-{uuid.uuid4().hex[:8]}")
+    bad = {**UI_RECIPE, "start_url": start_url}
+    resp = await client.post(
+        f"/targets/{target['id']}/personas",
+        json={"label": "M", "role_name": "m", "login_recipe": bad, "credential": PASSWORD},
+        headers=headers,
+    )
+    assert resp.status_code == 422
+    assert message in resp.text
+
+    persona = await _persona(client, headers, target)
+    resp = await client.patch(
+        f"/targets/{target['id']}/personas/{persona['id']}",
+        json={"login_recipe": bad, "credential": PASSWORD},
+        headers=headers,
+    )
+    assert resp.status_code == 422
+    assert message in resp.text
+
+
+async def test_off_domain_login_needs_explicit_confirmation(client):
+    headers, target = await _org_and_target(client, "sso-confirm")
+    sso = {**UI_RECIPE, "start_url": "https://login.microsoftonline.com/tenant/login"}
+    url = f"/targets/{target['id']}/personas"
+    body = {"label": "M", "role_name": "m", "credential": PASSWORD}
+    assert (
+        await client.post(url, json={**body, "login_recipe": sso}, headers=headers)
+    ).status_code == 422
+    resp = await client.post(
+        url, json={**body, "login_recipe": {**sso, "allow_off_domain": True}}, headers=headers
+    )
+    assert resp.status_code == 201, resp.text
+
+
+async def test_goto_step_off_target_is_rejected(client):
+    headers, target = await _org_and_target(client, "goto-off")
+    recipe = {
+        **UI_RECIPE,
+        "steps": [{"action": "goto", "value": "https://evil.example.org/"}, *UI_RECIPE["steps"]],
+    }
+    resp = await client.post(
+        f"/targets/{target['id']}/personas",
+        json={"label": "M", "role_name": "m", "login_recipe": recipe, "credential": PASSWORD},
+        headers=headers,
+    )
+    assert resp.status_code == 422
+    assert "step 1 (goto)" in resp.text
+
+
+# --- QA #24: Edit login can load the saved recipe (never the password) --------
+
+
+async def test_saved_login_can_be_read_back_without_the_password(client):
+    headers, target = await _org_and_target(client, "readback")
+    persona = await _persona(client, headers, target, login_recipe=UI_RECIPE, credential=PASSWORD)
+    resp = await client.get(
+        f"/targets/{target['id']}/personas/{persona['id']}/login", headers=headers
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["has_password"] is True
+    assert body["login_recipe"]["start_url"] == UI_RECIPE["start_url"]
+    assert body["login_recipe"]["steps"][0]["value"] == "member@lr.test"
+    assert PASSWORD["secret"] not in resp.text
+
+    bare = await _persona(client, headers, target, label="NoLogin")
+    body = (
+        await client.get(f"/targets/{target['id']}/personas/{bare['id']}/login", headers=headers)
+    ).json()
+    assert body == {"login_recipe": None, "has_password": False}
+
+    other_headers, _ = await _org_and_target(client, "readback-other", domain="o.test")
+    resp = await client.get(
+        f"/targets/{target['id']}/personas/{persona['id']}/login", headers=other_headers
+    )
+    assert resp.status_code == 404
