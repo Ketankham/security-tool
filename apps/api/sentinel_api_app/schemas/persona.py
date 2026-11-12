@@ -78,9 +78,14 @@ class LoginRecipeIn(BaseModel):
 
 
 class PersonaCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     label: str = Field(min_length=1, max_length=200)
     role_name: str = Field(min_length=1, max_length=100)
-    trust_rank: int = Field(ge=0, default=0)
+    # Bounded (QA #14: 99999999999999999999 overflowed the INTEGER column
+    # and returned a 500). Ranks only need to order roles, e.g. 0 anonymous,
+    # 10 member, 50 admin.
+    trust_rank: int = Field(ge=0, le=1000, default=0)
     tenant_key: str | None = Field(default=None, max_length=200)
     login_strategy: LoginStrategy | None = None
     credential: CredentialCreate | None = None

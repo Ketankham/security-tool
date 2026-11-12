@@ -144,6 +144,8 @@ export const api = {
     }),
   listScopeRules: (targetId: string) =>
     request<ScopeRule[]>(`/targets/${targetId}/scope-rules`),
+  deleteScopeRule: (targetId: string, ruleId: string) =>
+    request<void>(`/targets/${targetId}/scope-rules/${ruleId}`, { method: "DELETE" }),
   createScopeRule: (
     targetId: string,
     body: { kind: string; pattern: string; effect: string; label?: string },

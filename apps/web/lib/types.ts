@@ -22,6 +22,8 @@ export interface Target {
   ownership_verified_at: string | null;
   authorization_accepted: boolean;
   is_scannable: boolean;
+  // False when this deployment has the ownership gate switched off.
+  ownership_check_required: boolean;
 }
 
 export interface OwnershipChallenge {

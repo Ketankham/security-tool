@@ -6,6 +6,8 @@ QUEUED row and asks the broker to pick it up (docs/01 §5).
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sentinel_db.models import Organization, Scan, Target
 from sqlalchemy import select
@@ -13,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..celery_client import dispatch_scan
+from ..config import get_settings
 from ..deps import get_current_org, get_owned_target, get_session
 from ..schemas.scan import ScanCreate, ScanOut
 
@@ -27,7 +30,7 @@ async def create_scan(
     target: Target = Depends(get_owned_target),
     session: AsyncSession = Depends(get_session),
 ) -> Scan:
-    if not target.is_scannable:
+    if get_settings().require_ownership_verification and not target.is_scannable:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "Target is not scannable yet — ownership must be verified and authorization "
@@ -64,7 +67,7 @@ async def list_scans(
 
 @router.get("/scans/{scan_id}", response_model=ScanOut)
 async def get_scan(
-    scan_id: str,
+    scan_id: UUID,
     org: Organization = Depends(get_current_org),
     session: AsyncSession = Depends(get_session),
 ) -> Scan:

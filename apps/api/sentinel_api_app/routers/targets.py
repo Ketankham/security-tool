@@ -7,6 +7,7 @@ scope rules (docs/02-scan-lifecycle.md Phase 0, docs/06-safety-legal-abuse.md
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sentinel_db.enums import OwnershipVerificationMethod
@@ -14,6 +15,7 @@ from sentinel_db.models import Organization, ScopeRule, Target
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import get_settings
 from ..deps import get_current_org, get_owned_target, get_session
 from ..schemas.target import (
     AuthorizationAccept,
@@ -28,6 +30,21 @@ from ..schemas.target import (
 from ..services.ownership import generate_verification_token, verify_ownership
 
 router = APIRouter(tags=["targets"])
+
+
+def target_out(target: Target) -> TargetOut:
+    """TargetOut with this deployment's *effective* scannability: when the
+    ownership gate is switched off (settings.require_ownership_verification),
+    every target is scannable and the dashboard hides the verification card."""
+    required = get_settings().require_ownership_verification
+    out = TargetOut.model_validate(target)
+    return out.model_copy(
+        update={
+            "ownership_check_required": required,
+            "is_scannable": target.is_scannable or not required,
+        }
+    )
+
 
 _INSTRUCTIONS = {
     OwnershipVerificationMethod.DNS_TXT: (
@@ -49,7 +66,7 @@ async def create_target(
     payload: TargetCreate,
     org: Organization = Depends(get_current_org),
     session: AsyncSession = Depends(get_session),
-) -> Target:
+) -> TargetOut:
     target = Target(
         organization_id=org.id,
         root_domain=payload.root_domain,
@@ -59,21 +76,21 @@ async def create_target(
     session.add(target)
     await session.commit()
     await session.refresh(target)
-    return target
+    return target_out(target)
 
 
 @router.get("/targets", response_model=list[TargetOut])
 async def list_targets(
     org: Organization = Depends(get_current_org),
     session: AsyncSession = Depends(get_session),
-) -> list[Target]:
+) -> list[TargetOut]:
     result = await session.execute(select(Target).where(Target.organization_id == org.id))
-    return list(result.scalars().all())
+    return [target_out(t) for t in result.scalars().all()]
 
 
 @router.get("/targets/{target_id}", response_model=TargetOut)
-async def get_target(target: Target = Depends(get_owned_target)) -> Target:
-    return target
+async def get_target(target: Target = Depends(get_owned_target)) -> TargetOut:
+    return target_out(target)
 
 
 @router.post("/targets/{target_id}/ownership-challenge", response_model=OwnershipChallengeOut)
@@ -126,7 +143,7 @@ async def accept_authorization(
     payload: AuthorizationAccept,
     target: Target = Depends(get_owned_target),
     session: AsyncSession = Depends(get_session),
-) -> Target:
+) -> TargetOut:
     if not payload.accepted:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "Authorization must be explicitly accepted."
@@ -136,7 +153,7 @@ async def accept_authorization(
     target.authorization_accepted_at = datetime.now(UTC)
     await session.commit()
     await session.refresh(target)
-    return target
+    return target_out(target)
 
 
 @router.post(
@@ -149,6 +166,16 @@ async def create_scope_rule(
     target: Target = Depends(get_owned_target),
     session: AsyncSession = Depends(get_session),
 ) -> ScopeRule:
+    duplicate = await session.execute(
+        select(ScopeRule.id).where(
+            ScopeRule.target_id == target.id,
+            ScopeRule.kind == payload.kind,
+            ScopeRule.pattern == payload.pattern,
+            ScopeRule.effect == payload.effect,
+        )
+    )
+    if duplicate.first() is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This scope rule already exists.")
     rule = ScopeRule(target_id=target.id, **payload.model_dump())
     session.add(rule)
     await session.commit()
@@ -163,3 +190,19 @@ async def list_scope_rules(
 ) -> list[ScopeRule]:
     result = await session.execute(select(ScopeRule).where(ScopeRule.target_id == target.id))
     return list(result.scalars().all())
+
+
+@router.delete("/targets/{target_id}/scope-rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_scope_rule(
+    rule_id: UUID,
+    target: Target = Depends(get_owned_target),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    """Scope rules are plain configuration (nothing references them), so
+    they can be deleted outright — e.g. a rule saved before validation
+    existed (QA #11) that would now fail every scan's scope check."""
+    rule = await session.get(ScopeRule, rule_id)
+    if rule is None or rule.target_id != target.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Scope rule not found.")
+    await session.delete(rule)
+    await session.commit()

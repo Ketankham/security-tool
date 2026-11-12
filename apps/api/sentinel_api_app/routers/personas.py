@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sentinel_core.crypto import EnvelopeCrypto
 from sentinel_db.enums import LoginStrategy
 from sentinel_db.models import Credential, Organization, Persona, Target
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..deps import get_crypto, get_current_org, get_owned_target, get_session
@@ -32,6 +32,18 @@ async def create_persona(
     session: AsyncSession = Depends(get_session),
     crypto: EnvelopeCrypto = Depends(get_crypto),
 ) -> Persona:
+    duplicate = await session.execute(
+        select(Persona.id).where(
+            Persona.target_id == target.id, func.lower(Persona.label) == payload.label.lower()
+        )
+    )
+    if duplicate.first() is not None:
+        # Labels are how findings name who could reach what; two "Admin"s
+        # would make a report ambiguous (QA #19).
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"A persona named '{payload.label}' already exists."
+        )
+
     credential_id = None
     if payload.credential is not None:
         credential_id = await _store_credential(payload.credential, org, session, crypto)

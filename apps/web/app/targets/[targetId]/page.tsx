@@ -28,11 +28,19 @@ function TargetDetail({ targetId }: { targetId: string }) {
         <Link href="/">Targets</Link> / {target?.display_name ?? targetId.slice(0, 8)}
       </div>
 
-      {error && <div className="error-box">{error}</div>}
-      {!target ? (
+      {error && !target ? (
+        <div className="card">
+          <h2>Target not found</h2>
+          <p className="card-muted">
+            This target doesn&apos;t exist, or it belongs to a different organization. ({error})
+          </p>
+          <Link href="/">← Back to targets</Link>
+        </div>
+      ) : !target ? (
         <div className="notice">Loading target…</div>
       ) : (
         <>
+          {error && <div className="error-box">{error}</div>}
           <h1>{target.display_name}</h1>
           <p className="card-muted mono">{target.root_domain}</p>
 
@@ -93,28 +101,51 @@ function OwnershipCard({ target, onChange }: { target: Target; onChange: () => v
     }
   }
 
+  if (!target.ownership_check_required) {
+    return (
+      <div className="card">
+        <h2>
+          Ownership &amp; authorization <span className="badge tone-muted">Not required</span>
+        </h2>
+        <p className="card-muted">
+          Ownership verification is switched off on this deployment, so you can scan right away.
+          Every request still stays on <span className="mono">{target.root_domain}</span> and its
+          subdomains, within the scope rules below. Only scan sites the client has authorised you
+          to test.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="card">
       <h2>
-        Ownership & authorization{" "}
+        Ownership &amp; authorization{" "}
         {target.is_scannable ? (
-          <span className="badge tone-ok" title="Checked on the next scan">Login set</span>
+          <span className="badge tone-ok">Ready to scan</span>
         ) : (
           <span className="badge tone-pending">Incomplete</span>
         )}
       </h2>
       <p className="card-muted">
-        We never scan a target until ownership is proven and testing is
-        explicitly authorized. This gate is a safety requirement, not a
-        formality.
+        Two steps before the first scan: prove you control the domain, then confirm testing is
+        authorized.
       </p>
 
       {error && <div className="error-box" style={{ margin: "10px 0" }}>{error}</div>}
 
       {/* Step 1: ownership */}
+      <h3 style={{ marginTop: 14 }}>
+        1. Ownership{" "}
+        {target.ownership_verified ? (
+          <span className="badge tone-ok">Verified</span>
+        ) : (
+          <span className="badge tone-pending">Not verified</span>
+        )}
+      </h3>
       {!target.ownership_verified ? (
         <>
-          <div className="inline-form" style={{ marginTop: 10 }}>
+          <div className="inline-form" style={{ marginTop: 6 }}>
             <div>
               <label>Verification method</label>
               <select value={method} onChange={(e) => setMethod(e.target.value as OwnershipMethod)}>
@@ -139,25 +170,36 @@ function OwnershipCard({ target, onChange }: { target: Target; onChange: () => v
           )}
         </>
       ) : (
-        <div className="hint" style={{ marginTop: 8 }}>
-          ✓ Ownership verified
+        <div className="hint">
+          Verified
           {target.ownership_verification_method ? ` via ${target.ownership_verification_method}` : ""}.
         </div>
       )}
 
-      {/* Step 2: authorization */}
-      {target.ownership_verified && !target.authorization_accepted && (
-        <div style={{ marginTop: 14 }}>
-          <button className="btn-primary" disabled={busy} onClick={accept}>
+      {/* Step 2: authorization — always shown, so the second step is visible up front */}
+      <h3 style={{ marginTop: 16 }}>
+        2. Testing authorization{" "}
+        {target.authorization_accepted ? (
+          <span className="badge tone-ok">Accepted</span>
+        ) : (
+          <span className="badge tone-pending">Not accepted</span>
+        )}
+      </h3>
+      {!target.authorization_accepted && (
+        <div>
+          <button
+            className="btn-primary"
+            disabled={busy || !target.ownership_verified}
+            onClick={accept}
+          >
             Accept testing authorization
           </button>
           <div className="hint" style={{ marginTop: 6 }}>
-            Confirms you own or are contractually authorized to test this target.
+            {target.ownership_verified
+              ? "Confirms you own, or are contractually authorized to test, this target."
+              : "Available once ownership is verified (step 1)."}
           </div>
         </div>
-      )}
-      {target.authorization_accepted && (
-        <div className="hint" style={{ marginTop: 8 }}>✓ Testing authorized.</div>
       )}
     </div>
   );
@@ -174,7 +216,20 @@ function ScopeCard({ targetId }: { targetId: string }) {
   const [busy, setBusy] = useState(false);
   const [formErr, setFormErr] = useState<string | null>(null);
 
-  async function add() {
+  async function remove(rule: ScopeRule) {
+    if (!window.confirm(`Delete scope rule "${rule.effect} ${rule.kind}: ${rule.pattern}"?`)) return;
+    setFormErr(null);
+    try {
+      await api.deleteScopeRule(targetId, rule.id);
+      refresh();
+    } catch (e) {
+      setFormErr(e instanceof ApiError ? e.detail : String(e));
+    }
+  }
+
+  async function add(e?: React.FormEvent) {
+    e?.preventDefault();
+    if (!pattern.trim() || busy) return;
     setBusy(true);
     setFormErr(null);
     try {
@@ -203,13 +258,16 @@ function ScopeCard({ targetId }: { targetId: string }) {
           {rules.map((r) => (
             <div className="list-item" key={r.id}>
               <span className={`badge tone-${r.effect === "include" ? "ok" : "bad"}`}>{r.effect}</span>
-              <span className="grow mono">{r.kind}: {r.pattern}</span>
+              <span className="grow mono" style={{ overflowWrap: "anywhere" }}>{r.kind}: {r.pattern}</span>
+              <button className="btn-sm" type="button" onClick={() => remove(r)} aria-label="Delete rule">
+                Delete
+              </button>
             </div>
           ))}
         </div>
       )}
 
-      <div className="inline-form">
+      <form className="inline-form" onSubmit={add}>
         <div style={{ maxWidth: 160 }}>
           <label>Kind</label>
           <select value={kind} onChange={(e) => setKind(e.target.value)}>
@@ -221,7 +279,12 @@ function ScopeCard({ targetId }: { targetId: string }) {
         </div>
         <div style={{ flex: 2 }}>
           <label>Pattern</label>
-          <input value={pattern} placeholder="/api/" onChange={(e) => setPattern(e.target.value)} />
+          <input
+            value={pattern}
+            placeholder={SCOPE_PLACEHOLDER[kind]}
+            className="mono"
+            onChange={(e) => setPattern(e.target.value)}
+          />
         </div>
         <div style={{ maxWidth: 140 }}>
           <label>Effect</label>
@@ -230,11 +293,26 @@ function ScopeCard({ targetId }: { targetId: string }) {
             <option value="exclude">exclude</option>
           </select>
         </div>
-        <button disabled={busy || !pattern.trim()} onClick={add}>Add</button>
-      </div>
+        <button type="submit" disabled={busy || !pattern.trim()}>Add</button>
+      </form>
+      <div className="hint" style={{ marginTop: 6 }}>{SCOPE_HELP[kind]}</div>
     </div>
   );
 }
+
+const SCOPE_PLACEHOLDER: Record<string, string> = {
+  host: "api.client.com or *.client.com",
+  path_prefix: "/payments/",
+  path_regex: "^/classes/\\d+/attendance",
+  method: "DELETE",
+};
+
+const SCOPE_HELP: Record<string, string> = {
+  host: "A host (or *.host for its subdomains). Include rules limit the scan to these hosts; exclude rules carve them out.",
+  path_prefix: "A URL path that starts with /, e.g. /payments/ — exclude it to keep the scanner away from checkout or other risky areas.",
+  path_regex: "A regular expression matched against the URL path (Python syntax). Checked when you save.",
+  method: "An HTTP method such as DELETE or POST. Exclude it to stop the scanner sending that kind of request.",
+};
 
 function PersonasCard({ targetId, rootDomain }: { targetId: string; rootDomain: string }) {
   const { data: personas, error, refresh } = usePoll<Persona[]>(
@@ -332,7 +410,9 @@ function EditLogin({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function save() {
+  async function save(e?: React.FormEvent) {
+    e?.preventDefault();
+    if (busy) return;
     // The API never echoes a stored recipe back, so the editor always
     // starts blank and replaces the whole recipe. The password may be left
     // blank on a persona that already logs in: the stored one is kept.
@@ -356,7 +436,10 @@ function EditLogin({
   }
 
   return (
-    <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, margin: "6px 0 10px" }}>
+    <form
+      onSubmit={save}
+      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, margin: "6px 0 10px" }}
+    >
       {persona.has_login_recipe && (
         <div className="hint" style={{ marginBottom: 6 }}>
           Saving replaces this persona&apos;s whole login recipe. Leave the password blank to keep the
@@ -371,11 +454,11 @@ function EditLogin({
         passwordHint={persona.has_login_recipe ? "leave blank to keep current" : undefined}
       />
       <div className="row" style={{ marginTop: 12 }}>
-        <button className="btn-primary" disabled={busy} onClick={save}>
+        <button className="btn-primary" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Save login"}
         </button>
       </div>
-    </div>
+    </form>
   );
 }
 
@@ -399,7 +482,13 @@ function AddPersona({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function submit() {
+  async function submit(e?: React.FormEvent) {
+    e?.preventDefault();
+    if (busy) return;
+    if (!label.trim() || !role.trim()) {
+      setError("Enter a label and a role name.");
+      return;
+    }
     setError(null);
     const body: Record<string, unknown> = {
       label: label.trim(),
@@ -430,16 +519,19 @@ function AddPersona({
   }
 
   return (
-    <div style={{ borderTop: "1px solid var(--border)", marginTop: 12, paddingTop: 12 }}>
+    <form
+      onSubmit={submit}
+      style={{ borderTop: "1px solid var(--border)", marginTop: 12, paddingTop: 12 }}
+    >
       {error && <div className="error-box" style={{ marginBottom: 8 }}>{error}</div>}
       <div className="row">
         <div>
-          <label>Label</label>
-          <input value={label} placeholder="Admin user" onChange={(e) => setLabel(e.target.value)} />
+          <label>Label *</label>
+          <input value={label} required placeholder="Admin user" onChange={(e) => setLabel(e.target.value)} />
         </div>
         <div>
-          <label>Role name</label>
-          <input value={role} placeholder="admin" onChange={(e) => setRole(e.target.value)} />
+          <label>Role name *</label>
+          <input value={role} required placeholder="admin" onChange={(e) => setRole(e.target.value)} />
         </div>
       </div>
       <div className="row">
@@ -448,14 +540,21 @@ function AddPersona({
           <input
             type="number"
             min={0}
+            max={1000}
             value={trust}
-            onChange={(e) => setTrust(Number(e.target.value))}
+            onChange={(e) => setTrust(Math.max(0, Math.min(1000, Math.trunc(Number(e.target.value) || 0))))}
           />
         </div>
         <div>
           <label>Tenant key (optional)</label>
           <input value={tenant} placeholder="tenant-a" onChange={(e) => setTenant(e.target.value)} />
         </div>
+      </div>
+      <div className="hint" style={{ marginTop: 4 }}>
+        <b>Trust rank</b> orders roles by privilege (0 = logged out, e.g. 10 member, 50 admin, max
+        1000): a lower-ranked persona reaching a higher-ranked one&apos;s pages is a finding.{" "}
+        <b>Tenant key</b> groups personas that belong to the same customer account: one tenant
+        reaching another tenant&apos;s data is a finding.
       </div>
       <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 14 }}>
         <input
@@ -475,12 +574,12 @@ function AddPersona({
         </div>
       )}
       <div className="row" style={{ marginTop: 12 }}>
-        <button className="btn-primary" disabled={busy || !label.trim() || !role.trim()} onClick={submit}>
+        <button className="btn-primary" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Save persona"}
         </button>
-        <button onClick={onCancel}>Cancel</button>
+        <button type="button" onClick={onCancel}>Cancel</button>
       </div>
-    </div>
+    </form>
   );
 }
 
@@ -518,7 +617,7 @@ function ScansCard({ target }: { target: Target }) {
         </button>
         {!target.is_scannable && (
           <div className="hint" style={{ marginTop: 6 }}>
-            Verify ownership and accept authorization above first.
+            Complete both ownership steps above first.
           </div>
         )}
       </div>

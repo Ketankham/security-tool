@@ -27,6 +27,7 @@ satisfied by finishing instead of pausing).
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import UTC, datetime
 
@@ -270,6 +271,20 @@ async def _run_access_control(
         await engine.aclose()
 
 
+async def _first_invalid_regex_rule(
+    session: AsyncSession, target_id: uuid.UUID
+) -> ScopeRule | None:
+    result = await session.execute(
+        select(ScopeRule).where(ScopeRule.target_id == target_id, ScopeRule.kind == "path_regex")
+    )
+    for rule in result.scalars():
+        try:
+            re.compile(rule.pattern)
+        except re.error:
+            return rule
+    return None
+
+
 async def run_scan(scan_id: str) -> None:
     async with open_session() as session:
         # `selectinload` here matters, not just for speed: AsyncSession
@@ -297,7 +312,7 @@ async def run_scan(scan_id: str) -> None:
         scan.state = machine.current
         await _start_phase(session, phase)
 
-        if not target.is_scannable:
+        if get_settings().require_ownership_verification and not target.is_scannable:
             machine.transition(ScanState.BLOCKED_UNVERIFIED)
             scan.state = machine.current
             await _finish_phase(
@@ -310,6 +325,29 @@ async def run_scan(scan_id: str) -> None:
             scan.finished_at = datetime.now(UTC)
             await session.commit()
             log.info("scan_runner.blocked_unverified", scan_id=scan_id)
+            return
+
+        # Rules saved before the API validated them (QA #11 saved "([") would
+        # raise inside the ScopeGuard mid-scan. Silently skipping one would
+        # be worse: a broken *exclude* rule would widen the scope. So stop
+        # here, before any request, and say which rule to fix.
+        bad_rule = await _first_invalid_regex_rule(session, target.id)
+        if bad_rule is not None:
+            machine.transition(ScanState.BLOCKED_UNVERIFIED)
+            scan.state = machine.current
+            await _finish_phase(
+                session,
+                phase,
+                status=PhaseStatus.FAILED,
+                stats={},
+                error=(
+                    f"Scope rule '{bad_rule.pattern}' ({bad_rule.effect} path_regex) is not a "
+                    "valid regular expression. Fix or delete it on the target page, then rerun."
+                ),
+            )
+            scan.finished_at = datetime.now(UTC)
+            await session.commit()
+            log.info("scan_runner.invalid_scope_rule", scan_id=scan_id, rule_id=str(bad_rule.id))
             return
 
         await _finish_phase(

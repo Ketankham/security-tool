@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -177,3 +178,90 @@ async def test_run_scan_blocks_when_target_not_scannable(db_engine):
 async def test_run_scan_is_a_noop_for_missing_scan(db_engine):
     # Should log and return cleanly, not raise.
     await run_scan("00000000-0000-0000-0000-000000000000")
+
+
+# --- QA bug log 2026-11-12: ownership gate switch + invalid stored regex ------
+
+
+async def _unverified_target_scan(factory, *, slug: str, domain: str) -> tuple[Target, Scan]:
+    async with factory() as session:
+        org = Organization(name=slug, slug=slug, wrapped_data_key=b"key")
+        session.add(org)
+        await session.flush()
+        target = Target(organization_id=org.id, root_domain=domain, display_name=domain)
+        session.add(target)
+        await session.flush()
+        scan = Scan(target_id=target.id)
+        session.add(scan)
+        await session.commit()
+        return target, scan
+
+
+async def test_gate_disabled_lets_an_unverified_target_past_scope_verifying(db_engine, monkeypatch):
+    monkeypatch.setenv("REQUIRE_OWNERSHIP_VERIFICATION", "false")
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    _, scan = await _unverified_target_scan(factory, slug="gate-off", domain="gateoff.test")
+
+    # Stop the run right after SCOPE_VERIFYING: reaching recon at all is the
+    # behaviour under test.
+    recon = AsyncMock(side_effect=RuntimeError("stop after scope check"))
+    with (
+        patch("sentinel_worker_app.scan_runner.run_recon", new=recon),
+        contextlib.suppress(RuntimeError),
+    ):
+        await run_scan(str(scan.id))
+    recon.assert_called_once()
+
+    async with factory() as session:
+        phase = (
+            await session.execute(
+                select(ScanPhase).where(
+                    ScanPhase.scan_id == scan.id,
+                    ScanPhase.name == ScanPhaseName.SCOPE_VERIFYING,
+                )
+            )
+        ).scalar_one()
+        assert phase.status == PhaseStatus.COMPLETED
+
+
+async def test_invalid_stored_regex_blocks_the_scan_before_any_request(db_engine):
+    from sentinel_db.models import ScopeRule
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with factory() as session:
+        target = await _make_scannable_target(session, domain="badregex.test")
+        # Saved before the API validated regexes (QA #11).
+        session.add(
+            ScopeRule(target_id=target.id, kind="path_regex", pattern="([", effect="exclude")
+        )
+        scan = await _make_scan(session, target)
+
+    with patch("sentinel_worker_app.scan_runner.run_recon", new=AsyncMock()) as mock_recon:
+        await run_scan(str(scan.id))
+        mock_recon.assert_not_called()
+
+    async with factory() as session:
+        refreshed = await session.get(Scan, scan.id)
+        assert refreshed.state == ScanState.BLOCKED_UNVERIFIED
+        phase = (
+            await session.execute(select(ScanPhase).where(ScanPhase.scan_id == scan.id))
+        ).scalar_one()
+        assert phase.status == PhaseStatus.FAILED
+        assert "'(['" in phase.error and "not a valid regular expression" in phase.error
+
+
+def test_scope_guard_follows_the_gate_switch_but_keeps_host_confinement(monkeypatch):
+    from sentinel_worker_app.substrate import build_scope_guard
+
+    target = Target(root_domain="client.test", display_name="c", ownership_verified=False)
+
+    monkeypatch.setenv("REQUIRE_OWNERSHIP_VERIFICATION", "true")
+    guard = build_scope_guard(target, [])
+    assert not guard.evaluate(method="GET", url="https://client.test/").allowed
+
+    monkeypatch.setenv("REQUIRE_OWNERSHIP_VERIFICATION", "false")
+    guard = build_scope_guard(target, [])
+    assert guard.evaluate(method="GET", url="https://client.test/").allowed
+    assert guard.evaluate(method="GET", url="https://app.client.test/x").allowed
+    # Turning the gate off never widens the host scope.
+    assert not guard.evaluate(method="GET", url="https://other.test/").allowed

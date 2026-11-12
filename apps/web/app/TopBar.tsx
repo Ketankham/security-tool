@@ -6,6 +6,7 @@ import { BASE_PATH, clearOrgId, getOrgId } from "@/lib/api";
 
 export function TopBar() {
   const [orgId, setOrg] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     setOrg(getOrgId());
@@ -28,9 +29,24 @@ export function TopBar() {
         <div className="spacer" />
         {orgId && (
           <>
-            <span className="org-chip" title="Active organization (dev auth stand-in)">
+            <span className="org-chip mono" title={`Organization id: ${orgId}`}>
               org {orgId.slice(0, 8)}…
             </span>
+            <button
+              className="btn-sm"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(orgId);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1500);
+                } catch {
+                  // Clipboard blocked (http, permissions): show it to copy by hand.
+                  window.prompt("Organization id", orgId);
+                }
+              }}
+            >
+              {copied ? "Copied" : "Copy id"}
+            </button>
             <button
               className="btn-sm"
               onClick={() => {

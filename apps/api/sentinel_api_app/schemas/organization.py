@@ -6,8 +6,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class OrganizationCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
-    slug: str = Field(min_length=1, max_length=200, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=120)
+    # Lower-case words joined by single hyphens (QA #18).
+    slug: str = Field(min_length=2, max_length=63, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class OrganizationOut(BaseModel):
