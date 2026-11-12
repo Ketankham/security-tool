@@ -1839,10 +1839,12 @@ source = { editable = "apps/worker" }
 dependencies = [
     { name = "celery", extra = ["redis"] },
     { name = "sentinel-auth" },
+    { name = "sentinel-checks" },
     { name = "sentinel-core" },
     { name = "sentinel-crawler" },
     { name = "sentinel-db" },
     { name = "sentinel-recon" },
+    { name = "sentinel-reporter" },
     { name = "structlog" },
 ]
 
@@ -1850,10 +1852,12 @@ dependencies = [
 requires-dist = [
     { name = "celery", extras = ["redis"], specifier = ">=5.4" },
     { name = "sentinel-auth", editable = "packages/auth" },
+    { name = "sentinel-checks", editable = "packages/checks" },
     { name = "sentinel-core", editable = "packages/core" },
     { name = "sentinel-crawler", editable = "packages/crawler" },
     { name = "sentinel-db", editable = "packages/db" },
     { name = "sentinel-recon", editable = "packages/recon" },
+    { name = "sentinel-reporter", editable = "packages/reporter" },
     { name = "structlog", specifier = ">=24.1" },
 ]
 

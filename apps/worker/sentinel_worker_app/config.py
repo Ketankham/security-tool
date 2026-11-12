@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     storage_backend: str = "local"
     storage_local_path: str = "./data/transcripts"
+    report_local_path: str = "./data/reports"
     kms_master_key: str = ""  # required for AUTH_ESTABLISHING — see sentinel_core.crypto
 
 

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, patch
 
 from sentinel_core.state_machine import PhaseStatus, ScanPhaseName, ScanState
-from sentinel_db.models import Asset, Organization, Scan, ScanPhase, Target
+from sentinel_core.transcript import LocalTranscriptStore
+from sentinel_db.enums import ReportFormat
+from sentinel_db.models import Asset, Organization, Report, Scan, ScanPhase, Target
 from sentinel_recon import DiscoveredAsset, HttpProbeResult, ReconResult
+from sentinel_worker_app.config import get_settings
 from sentinel_worker_app.scan_runner import run_scan
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -55,14 +59,16 @@ async def _make_scan(session: AsyncSession, target: Target) -> Scan:
     return scan
 
 
-async def test_run_scan_pauses_after_surface_mapping_with_degraded_notes(db_engine):
+async def test_run_scan_completes_with_degraded_notes_and_a_report(db_engine):
     """No personas are configured on this target, so AUTH_ESTABLISHING and
     CRAWLING both run in their honest degraded-anonymous-only mode (real
     browser, real network — `acme.test` doesn't resolve, so the crawl finds
     nothing, which the crawler treats as a normal empty result, not a
-    failure) and the scan still progresses all the way to SURFACE_MAPPING
-    before pausing, since the check engines past that are the only thing
-    still unimplemented."""
+    failure), ACCESS_CONTROL legitimately finds nothing to test (no personas
+    means no vertical/horizontal/anonymous boundary applies), and the scan
+    now genuinely reaches COMPLETE with a persisted report — reporting only
+    covers recon/surface/findings today (M3 adds PDF/SARIF/narrative), and
+    the report's own scope_note says so."""
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     async with factory() as session:
         target = await _make_scannable_target(session)
@@ -77,12 +83,11 @@ async def test_run_scan_pauses_after_surface_mapping_with_degraded_notes(db_engi
 
     async with factory() as session:
         refreshed = await session.get(Scan, scan.id)
-        assert refreshed.state == ScanState.PAUSED
-        assert refreshed.paused_from == ScanState.SURFACE_MAPPING
+        assert refreshed.state == ScanState.COMPLETE
+        assert refreshed.finished_at is not None
         assert refreshed.is_degraded is True
         assert any("a note" in r for r in refreshed.degraded_reasons)
         assert any("No personas" in r for r in refreshed.degraded_reasons)
-        assert any("not implemented" in r for r in refreshed.degraded_reasons)
 
         phases = (
             (await session.execute(select(ScanPhase).where(ScanPhase.scan_id == scan.id)))
@@ -98,6 +103,16 @@ async def test_run_scan_pauses_after_surface_mapping_with_degraded_notes(db_engi
         assert phase_by_name[ScanPhaseName.CRAWLING].status == PhaseStatus.COMPLETED
         assert phase_by_name[ScanPhaseName.CRAWLING].stats_json["personas_crawled"] == ["anonymous"]
         assert phase_by_name[ScanPhaseName.SURFACE_MAPPING].status == PhaseStatus.COMPLETED
+        assert phase_by_name[ScanPhaseName.PASSIVE_CHECKS].status == PhaseStatus.SKIPPED
+        assert phase_by_name[ScanPhaseName.ACCESS_CONTROL].status == PhaseStatus.COMPLETED
+        assert phase_by_name[ScanPhaseName.ACCESS_CONTROL].stats_json["observed_requests"] == 0
+        assert phase_by_name[ScanPhaseName.ACTIVE_INJECTION].status == PhaseStatus.SKIPPED
+        assert phase_by_name[ScanPhaseName.SESSION_CHECKS].status == PhaseStatus.SKIPPED
+        assert phase_by_name[ScanPhaseName.BUSINESS_LOGIC].status == PhaseStatus.SKIPPED
+        assert phase_by_name[ScanPhaseName.VERIFYING].status == PhaseStatus.COMPLETED
+        assert phase_by_name[ScanPhaseName.TRIAGING].status == PhaseStatus.COMPLETED
+        assert phase_by_name[ScanPhaseName.REPORTING].status == PhaseStatus.COMPLETED
+        assert phase_by_name[ScanPhaseName.REPORTING].stats_json["assets_found"] == 1
 
         assets = (
             (await session.execute(select(Asset).where(Asset.scan_id == scan.id))).scalars().all()
@@ -106,6 +121,17 @@ async def test_run_scan_pauses_after_surface_mapping_with_degraded_notes(db_engi
         assert assets[0].host == target.root_domain
         assert assets[0].ip_addresses == ["1.2.3.4"]
         assert assets[0].http_probes[0]["status_code"] == 200
+
+        report = (
+            await session.execute(select(Report).where(Report.scan_id == scan.id))
+        ).scalar_one()
+        assert report.format == ReportFormat.DASHBOARD
+        store = LocalTranscriptStore(get_settings().report_local_path)
+        body = json.loads(await store.get(report.storage_pointer))
+        assert body["scan_id"] == str(scan.id)
+        assert body["target"]["root_domain"] == target.root_domain
+        assert body["summary"]["assets_found"] == 1
+        assert "authorization engine" not in body["scope_note"]  # anonymous-only crawl
 
 
 async def test_run_scan_blocks_when_target_not_scannable(db_engine):
