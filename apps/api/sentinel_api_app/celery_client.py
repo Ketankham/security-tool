@@ -15,6 +15,7 @@ from functools import lru_cache
 
 import structlog
 from celery import Celery
+from celery.result import AsyncResult
 
 from .config import get_settings
 
@@ -36,3 +37,32 @@ def dispatch_scan(scan_id: str) -> bool:
     except Exception:  # noqa: BLE001 — broker connectivity issues are broad and expected here
         log.warning("celery_client.dispatch_failed", scan_id=scan_id, exc_info=True)
         return False
+
+
+def dispatch_test_login(persona_id: str) -> str | None:
+    """Queues the worker's persona.test_login on the "logins" queue (a
+    small dedicated worker answers it even during a long scan). Returns the
+    task id to poll, or None if the broker is unreachable."""
+    try:
+        result = _celery_app().send_task("persona.test_login", args=[persona_id], queue="logins")
+        return str(result.id)
+    except Exception:  # noqa: BLE001 — see dispatch_scan
+        log.warning(
+            "celery_client.test_login_dispatch_failed", persona_id=persona_id, exc_info=True
+        )
+        return None
+
+
+def read_test_login(test_id: str) -> dict | None:
+    """The finished test's result dict, or None while it is still queued or
+    running (or if the id is unknown/expired — indistinguishable in Celery,
+    so the dashboard gives up after a few minutes)."""
+    result = AsyncResult(test_id, app=_celery_app())
+    if not result.ready():
+        return None
+    value = result.result
+    if isinstance(value, dict):
+        return value
+    # The task itself never raises (tasks.test_login_task), so this is a
+    # worker-level failure such as a hard time limit.
+    return {"success": False, "error": f"The login test failed: {value!r}"[:500]}

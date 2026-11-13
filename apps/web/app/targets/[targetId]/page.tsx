@@ -7,7 +7,15 @@ import { OrgGate } from "../../OrgGate";
 import { ApiError, api } from "@/lib/api";
 import { usePoll } from "@/lib/usePoll";
 import { STATE_LABEL, isFailureState, isTerminal } from "@/lib/scan";
-import type { OwnershipChallenge, OwnershipMethod, Persona, Scan, ScopeRule, Target } from "@/lib/types";
+import type {
+  LoginTestResult,
+  OwnershipChallenge,
+  OwnershipMethod,
+  Persona,
+  Scan,
+  ScopeRule,
+  Target,
+} from "@/lib/types";
 import {
   EMPTY_LOGIN,
   LoginRecipeFields,
@@ -327,6 +335,7 @@ function PersonasCard({ targetId, rootDomain }: { targetId: string; rootDomain: 
   );
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
+  const [testing, setTesting] = useState<string | null>(null);
 
   return (
     <div className="card">
@@ -349,7 +358,9 @@ function PersonasCard({ targetId, rootDomain }: { targetId: string; rootDomain: 
                   </div>
                   <div className="sub">
                     {p.tenant_key ? `tenant ${p.tenant_key}` : "no tenant"}
-                    {p.has_login_recipe ? " · logs in with a recipe" : " · no login — scans as anonymous"}
+                    {p.has_login_recipe
+                      ? ` · logs in with ${STRATEGY_TEXT[p.login_strategy ?? "form"] ?? "a recipe"}`
+                      : " · no login — scans as anonymous"}
                   </div>
                   {!p.is_available && p.unavailable_reason && (
                     <div className="sub" style={{ color: "var(--bad, #f87171)" }}>
@@ -360,9 +371,17 @@ function PersonasCard({ targetId, rootDomain }: { targetId: string; rootDomain: 
                 {!p.has_login_recipe ? (
                   <span className="badge tone-muted">No login</span>
                 ) : p.is_available ? (
-                  <span className="badge tone-ok" title="Checked on the next scan">Login set</span>
+                  <span className="badge tone-ok" title="Use Test login to check it now">Login set</span>
                 ) : (
                   <span className="badge tone-bad">Login failed</span>
+                )}
+                {p.has_login_recipe && (
+                  <button
+                    className="btn-sm"
+                    onClick={() => setTesting(testing === p.id ? null : p.id)}
+                  >
+                    {testing === p.id ? "Hide test" : "Test login"}
+                  </button>
                 )}
                 <button
                   className="btn-sm"
@@ -371,6 +390,9 @@ function PersonasCard({ targetId, rootDomain }: { targetId: string; rootDomain: 
                   {editing === p.id ? "Close" : p.has_login_recipe ? "Edit login" : "Set up login"}
                 </button>
               </div>
+              {testing === p.id && (
+                <LoginTest targetId={targetId} persona={p} onFinished={refresh} />
+              )}
               {editing === p.id && (
                 <EditLogin
                   targetId={targetId}
@@ -396,6 +418,139 @@ function PersonasCard({ targetId, rootDomain }: { targetId: string; rootDomain: 
         />
       ) : (
         <button onClick={() => setOpen(true)}>+ Add persona</button>
+      )}
+    </div>
+  );
+}
+
+const STRATEGY_TEXT: Record<string, string> = {
+  form: "a login form",
+  manual_session: "a pasted cookie",
+  api_token: "a pasted header",
+};
+
+// v1 #1: replay the saved login once, in the worker, and show what happened:
+// pass/fail, the reason, where the browser ended up, and a screenshot of it.
+const TEST_TIMEOUT_MS = 150_000;
+
+function LoginTest({
+  targetId,
+  persona,
+  onFinished,
+}: {
+  targetId: string;
+  persona: Persona;
+  onFinished: () => void;
+}) {
+  const [result, setResult] = useState<LoginTestResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [run, setRun] = useState(0); // bump to start another test
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const started = Date.now();
+    setResult(null);
+    setError(null);
+    setRunning(true);
+    setElapsed(0);
+
+    async function poll(testId: string) {
+      if (cancelled) return;
+      try {
+        const r = await api.getLoginTest(targetId, persona.id, testId);
+        if (cancelled) return;
+        if (r.status === "done") {
+          setResult(r);
+          setRunning(false);
+          onFinished(); // the persona's Available/Failed status changed
+          return;
+        }
+      } catch (e) {
+        // A blip (e.g. a deploy restarting the API): keep polling until the deadline.
+        if (e instanceof ApiError && e.status === 404) {
+          setError(e.detail);
+          setRunning(false);
+          return;
+        }
+      }
+      const spent = Date.now() - started;
+      setElapsed(Math.round(spent / 1000));
+      if (spent > TEST_TIMEOUT_MS) {
+        setError(
+          "No answer from the worker after 2½ minutes. Check that the worker containers are running, then try again.",
+        );
+        setRunning(false);
+        return;
+      }
+      timer = setTimeout(() => poll(testId), 2000);
+    }
+
+    api
+      .startLoginTest(targetId, persona.id)
+      .then(({ test_id }) => poll(test_id))
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e instanceof ApiError ? e.detail : String(e));
+        setRunning(false);
+      });
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+    // onFinished is a stable refresh callback; re-running is driven by `run`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetId, persona.id, run]);
+
+  return (
+    <div
+      aria-live="polite"
+      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, margin: "6px 0 10px" }}
+    >
+      {running && (
+        <div className="hint">
+          Logging in as {persona.label} in a real browser… {elapsed > 0 ? `${elapsed}s` : ""}
+        </div>
+      )}
+      {error && <div className="error-box">{error}</div>}
+      {result && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span className={`badge tone-${result.success ? "ok" : "bad"}`}>
+              {result.success ? "Login works" : "Login failed"}
+            </span>
+            {result.duration_s !== null && <span className="hint">took {result.duration_s}s</span>}
+          </div>
+          {!result.success && result.error && (
+            <div className="field-error" style={{ marginTop: 6 }}>{result.error}</div>
+          )}
+          {result.final_url && (
+            <div className="hint" style={{ marginTop: 6, wordBreak: "break-all" }}>
+              Ended on <span className="mono">{result.final_url}</span>
+            </div>
+          )}
+          {result.screenshot_jpeg_b64 && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={`data:image/jpeg;base64,${result.screenshot_jpeg_b64}`}
+              alt={`What the browser showed at the end of ${persona.label}'s login`}
+              style={{
+                display: "block",
+                marginTop: 8,
+                maxWidth: "100%",
+                border: "1px solid var(--border)",
+                borderRadius: 6,
+              }}
+            />
+          )}
+        </>
+      )}
+      {!running && (
+        <button className="btn-sm" style={{ marginTop: 8 }} onClick={() => setRun((n) => n + 1)}>
+          Test again
+        </button>
       )}
     </div>
   );
@@ -476,8 +631,8 @@ function EditLogin({
         <>
           {hasPassword && (
             <div className="hint" style={{ marginBottom: 6 }}>
-              Showing the saved login. The password is never shown: leave it blank to keep the current
-              one.
+              Showing the saved login. The password, cookie or header value is never shown: leave it
+              blank to keep the current one.
             </div>
           )}
           {error && <div className="error-box" style={{ marginBottom: 8 }}>{error}</div>}
@@ -543,7 +698,6 @@ function AddPersona({
         setError("Fix the highlighted login fields.");
         return;
       }
-      body.login_strategy = "form";
       body.login_recipe = built.recipe;
       body.credential = { kind: "password", secret: built.password };
     }
@@ -673,15 +827,17 @@ function ScansCard({ target }: { target: Target }) {
         <div className="list">
           {scans
             .slice()
-            .sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))
+            .sort((a, b) => b.created_at.localeCompare(a.created_at))
             .map((s) => (
               <Link key={s.id} href={`/scans/${s.id}`} className="list-item" style={{ color: "inherit" }}>
                 <div className="grow">
                   <div className="title mono">{s.id.slice(0, 8)}</div>
                   <div className="sub">
-                    {s.triggered_by}
-                    {s.started_at ? ` · started ${new Date(s.started_at).toLocaleString()}` : ""}
+                    {s.triggered_by} · {new Date(s.started_at ?? s.created_at).toLocaleString()}
                   </div>
+                  {s.fail_reason && (
+                    <div className="sub" style={{ color: "var(--bad)" }}>{s.fail_reason}</div>
+                  )}
                 </div>
                 <ScanStateBadge state={s.state} />
               </Link>

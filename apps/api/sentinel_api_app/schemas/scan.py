@@ -48,6 +48,7 @@ class ScanOut(BaseModel):
     is_degraded: bool
     degraded_reasons: list[str]
     fail_reason: str | None
+    created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
     llm_tokens_used: int

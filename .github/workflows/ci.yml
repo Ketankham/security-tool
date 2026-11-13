@@ -217,10 +217,14 @@ jobs:
           API_SECRET_KEY: ${{ secrets.API_SECRET_KEY }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Password for https://<domain>/security. Optional: when unset, one is
+          # generated on the server (read it with: grep DASHBOARD_PASSWORD /opt/sentinel/.secrets).
+          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+          DASHBOARD_USER: ${{ secrets.DASHBOARD_USER }}
         with:
           host: ${{ steps.resolve_host.outputs.host }}
           username: ${{ secrets.HETZNER_USER }}
           key: ${{ secrets.HETZNER_SSH_KEY }}
           command_timeout: 20m
-          envs: KMS_MASTER_KEY,API_SECRET_KEY,POSTGRES_PASSWORD,ANTHROPIC_API_KEY,SITE_DOMAIN
+          envs: KMS_MASTER_KEY,API_SECRET_KEY,POSTGRES_PASSWORD,ANTHROPIC_API_KEY,DASHBOARD_PASSWORD,DASHBOARD_USER,SITE_DOMAIN
           script: bash /opt/sentinel/remote-deploy.sh

@@ -14,6 +14,13 @@
 #   https://<domain>/anything-else   -> redirect to http://<domain>/... (the app that owns port 80)
 #
 # The accounting app stays on http://<domain>:8000/ and is not proxied here.
+#
+# Access control (v1 #6): everything under /security (dashboard and API) asks
+# for a username + password (HTTP basic auth). The credentials live in
+# /etc/caddy/sentinel-access.caddy, which remote-deploy.sh writes on the server
+# from the DASHBOARD_PASSWORD secret (bcrypt hash only — never the password).
+# It is imported by exact path on purpose: if the file is missing, Caddy
+# refuses to load this config instead of serving the dashboard unprotected.
 {
 	http_port 8089
 	auto_https disable_redirects
@@ -27,6 +34,10 @@
 	}
 
 	encode zstd gzip
+
+	# Defines @sentinel_protected and the basic_auth that guards it. Caddy
+	# orders basic_auth before `route`, so it runs before any proxying below.
+	import /etc/caddy/sentinel-access.caddy
 
 	# `route` keeps these in written order (most specific first) instead of
 	# Caddy's automatic directive sorting.

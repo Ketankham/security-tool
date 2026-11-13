@@ -6,6 +6,7 @@
 
 import type {
   Finding,
+  LoginTestResult,
   Organization,
   OwnershipChallenge,
   OwnershipMethod,
@@ -164,6 +165,15 @@ export const api = {
   // Set or replace an existing persona's login recipe and/or password.
   updatePersonaLogin: (targetId: string, personaId: string, body: unknown) =>
     request<Persona>(`/targets/${targetId}/personas/${personaId}`, { method: "PATCH", body }),
+  // Test login (v1 #1): the worker replays the saved login; poll for the result.
+  startLoginTest: (targetId: string, personaId: string) =>
+    request<{ test_id: string }>(`/targets/${targetId}/personas/${personaId}/test-login`, {
+      method: "POST",
+    }),
+  getLoginTest: (targetId: string, personaId: string, testId: string) =>
+    request<LoginTestResult>(
+      `/targets/${targetId}/personas/${personaId}/test-login/${testId}`,
+    ),
 
   // Scans.
   listScans: (targetId: string) => request<Scan[]>(`/targets/${targetId}/scans`),
@@ -173,6 +183,7 @@ export const api = {
       method: "POST",
       body: { triggered_by: triggeredBy },
     }),
+  retryScan: (scanId: string) => request<Scan>(`/scans/${scanId}/retry`, { method: "POST" }),
 
   // Findings.
   listFindings: (scanId: string) => request<Finding[]>(`/scans/${scanId}/findings`),

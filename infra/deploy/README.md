@@ -25,7 +25,7 @@ Internet
   └─ :8000 ─► accsys app  (direct, as before)
 
 /opt/accsys     accounting compose project (untouched by this repo)
-/opt/sentinel   api, worker, web, postgres, redis   (this repo)
+/opt/sentinel   api, worker, worker-logins, web, postgres, redis   (this repo)
 /opt/edge       shared Caddy proxy                  (deployed by this repo)
 ```
 
@@ -48,9 +48,13 @@ deploys.
    - validates the secrets and refuses to start with a changed `KMS_MASTER_KEY` (see below),
    - writes `/opt/sentinel/.env` from the secrets,
    - loads the images, starts postgres + redis, runs `alembic upgrade head`,
-   - starts api / worker / web and waits for their health checks,
-   - installs or reloads the shared Caddy proxy in `/opt/edge`,
-   - smoke-checks `/healthz` locally and through `https://<domain>/security/api/healthz`.
+   - starts api / worker / worker-logins / web and waits for their health checks,
+   - hashes the dashboard password, validates the new Caddy config with
+     `caddy validate`, and only then installs/reloads it in `/opt/edge`
+     (restoring the previous config if the reload is rejected),
+   - smoke-checks `/healthz` locally, checks that `https://<domain>/security`
+     answers **401 without a password** (the deploy fails if it doesn't), and
+     checks `https://<domain>/security/api/healthz` with the password.
 
 ## One-time setup
 
@@ -74,6 +78,26 @@ first deploy:
 ```bash
 scp root@accsysn.duckdns.org:/opt/sentinel/.secrets ./sentinel-secrets.backup
 ```
+
+### Dashboard password
+
+Everything under `https://<domain>/security` (dashboard and API) asks for a
+username and password (HTTP basic auth in Caddy). The username is `sentinel`
+(or the `DASHBOARD_USER` secret). The password is either:
+
+- **your choice:** set the `DASHBOARD_PASSWORD` GitHub secret (at least 12
+  characters, no `"` or `\`) and redeploy. Change the secret and redeploy to
+  rotate it; or
+- **generated** on the first deploy and kept in `/opt/sentinel/.secrets`:
+
+  ```bash
+  ssh root@accsysn.duckdns.org grep DASHBOARD_PASSWORD /opt/sentinel/.secrets
+  ```
+
+Only the bcrypt hash reaches Caddy (`/opt/edge/conf/sentinel-access.caddy`).
+The Caddyfile imports that file by exact path, so if it's ever missing Caddy
+refuses the config rather than serving the dashboard unprotected. The
+accounting app on `:8000` is not affected.
 
 Optional secrets: `ANTHROPIC_API_KEY` (LLM-assisted phases), and
 `KMS_MASTER_KEY` / `POSTGRES_PASSWORD` / `API_SECRET_KEY` only if you want to
@@ -117,12 +141,19 @@ Hetzner Cloud firewall (in the Hetzner console) is in use, allow 443 there too.
   warns if the HTTPS check fails then. Logs: `docker logs edge-caddy-1`.
   Certificates live in the `edge_caddy_data` volume; don't delete it, or you
   may hit Let's Encrypt rate limits.
-- **Worker crash-loops.** The worker has no healthcheck, so `compose --wait`
-  would report it healthy even while it restart-loops. The deploy watches it
-  for 20 s after start and fails with its last 40 log lines if it isn't still
-  up with zero restarts.
-- **Memory.** The worker runs one scan at a time (`--concurrency=1`), is capped
-  at 2 GB, and has a 512 MB `/dev/shm` (Chromium crashes on Docker's 64 MB default).
+- **Worker crash-loops.** The workers have no healthcheck, so `compose --wait`
+  would report them healthy even while they restart-loop. The deploy watches
+  both for 20 s after start and fails with the last 40 log lines of any that
+  isn't still up with zero restarts.
+- **Memory.** The scan worker runs one scan at a time (`--concurrency=1`), is
+  capped at 2 GB, and has a 512 MB `/dev/shm` (Chromium crashes on Docker's
+  64 MB default). `worker-logins` (1 GB cap) only runs the dashboard's
+  "Test login" button, so a test answers in seconds even during a long scan.
+- **Scans never stay stuck.** A scan that crashes is marked *Failed* with the
+  reason (no automatic re-run). A scan cut off by a deploy or a worker
+  restart is marked *Failed* when the scan worker starts again, and one that
+  runs past `SCAN_TIME_LIMIT_S` (default 3 h) is stopped and marked *Failed*.
+  Every finished scan has a Retry / Run again button.
 - **Recon binaries.** `subfinder` and `tlsx` are built into the worker image
   (pinned versions, verified against Go's checksum database). ProjectDiscovery's
   `httpx` is left out on purpose: the venv's Python `httpx` script has the same
@@ -130,13 +161,13 @@ Hetzner Cloud firewall (in the Hetzner console) is in use, allow 443 there too.
 
 ## Public exposure: read before relying on it
 
-The API still uses the **dev auth stand-in** (`X-Org-Id` header,
-`apps/api/sentinel_api_app/deps.py`), and `POST /organizations` is open. Right
-now anyone who finds the URL can create an org and use the UI. Ownership
-verification still stops them scanning domains they don't control. Before real
-customer data goes in:
+`/security` is behind the dashboard password (above), so strangers can't
+reach the UI or API. Behind it, the API still uses the **dev auth stand-in**
+(`X-Org-Id` header, `apps/api/sentinel_api_app/deps.py`): everyone who has the
+password can open every organization whose id they know. Fine for one internal
+team; before giving clients their own access:
 
-- wire Clerk (or put basic auth in the Caddyfile for `/security*`),
+- wire real user accounts (Clerk),
 - add private and link-local IP blocking to the scope guard, so the worker can't
   be pointed at the server's own internal services,
 - keep in mind that Hetzner acts quickly on scanning abuse reports: only scan
@@ -146,7 +177,7 @@ customer data goes in:
 
 ```bash
 cd /opt/sentinel && docker compose -f docker-compose.prod.yml ps
-docker compose -f /opt/sentinel/docker-compose.prod.yml logs -f api worker web
+docker compose -f /opt/sentinel/docker-compose.prod.yml logs -f api worker worker-logins web
 docker logs -f edge-caddy-1
 docker compose -f /opt/sentinel/docker-compose.prod.yml exec postgres psql -U sentinel
 ```

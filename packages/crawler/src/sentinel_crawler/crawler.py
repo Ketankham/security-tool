@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 from playwright.async_api import Browser, Page, Request, StorageState
 from sentinel_core.rate_limiter import RateLimiter
 from sentinel_core.scope_guard import DestructiveActionGuard, ScopeGuard
+from sentinel_core.session_import import route_session_headers, split_session_state
 
 from .models import DiscoveredEndpoint, DiscoverySource, SurfaceMap
 from .surface_mapper import normalize_path
@@ -63,9 +64,13 @@ class PersonaCrawler:
         # TypedDict; a persona's session state is stored/passed around as a
         # plain dict elsewhere in the system (see sentinel_auth.replay), so
         # this cast is the one place the two shapes have to meet.
+        playwright_state, session_headers = split_session_state(storage_state)
         context = await browser.new_context(
-            storage_state=cast(StorageState, storage_state) if storage_state else None
+            storage_state=cast(StorageState, playwright_state) if playwright_state else None
         )
+        # A header login (sentinel_core.session_import): the header goes on
+        # requests to the target's own hosts only.
+        await route_session_headers(context, session_headers, urlsplit(root_url).hostname or "")
         page = await context.new_page()
 
         surface = SurfaceMap(root_url=root_url, persona_id=persona_id)

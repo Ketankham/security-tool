@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     # Must match the API's setting.
     require_ownership_verification: bool = True
 
+    # A scan still running after this long is stopped and marked FAILED
+    # instead of holding the (single) scan worker forever.
+    scan_time_limit_s: int = 3 * 3600
+
+    # On start-up, mark scans left mid-run by a previous worker process as
+    # FAILED (scan_runner.fail_interrupted_scans). Only correct while one
+    # scan worker runs; the login-test worker turns it off.
+    sweep_interrupted_scans: bool = True
+
 
 def get_settings() -> Settings:
     return Settings()

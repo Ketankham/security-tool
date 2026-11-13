@@ -4,14 +4,34 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from sentinel_core.session_import import (
+    check_header_name,
+    check_header_value,
+    parse_cookie_header,
+)
 from sentinel_db.enums import CredentialKind, LoginStrategy
+
+# The recipe's `strategy` (what the worker replays) -> the persona's stored
+# LoginStrategy and the kind of secret it keeps.
+RECIPE_STRATEGY_TO_LOGIN_STRATEGY: dict[str, LoginStrategy] = {
+    "form": LoginStrategy.FORM,
+    "cookie": LoginStrategy.MANUAL_SESSION,
+    "header": LoginStrategy.API_TOKEN,
+}
+RECIPE_STRATEGY_TO_CREDENTIAL_KIND: dict[str, CredentialKind] = {
+    "form": CredentialKind.PASSWORD,
+    "cookie": CredentialKind.SESSION_IMPORT,
+    "header": CredentialKind.API_TOKEN,
+}
+SECRET_NAME = {"form": "a password", "cookie": "the cookie value", "header": "the header value"}
 
 
 class CredentialCreate(BaseModel):
     """The plaintext secret is accepted here and immediately encrypted —
     it is never stored or logged in this form (docs/01 §6.3)."""
 
-    kind: CredentialKind
+    # Set by the API from the login's strategy when a login is saved with it.
+    kind: CredentialKind = CredentialKind.PASSWORD
     secret: str = Field(min_length=1, repr=False)
 
 
@@ -52,33 +72,75 @@ class LoginStepIn(BaseModel):
 
 
 class SuccessAssertionIn(BaseModel):
-    kind: Literal["url_contains", "selector_visible", "selector_hidden"]
+    kind: Literal["url_contains", "url_not_contains", "selector_visible", "selector_hidden"]
     value: str = Field(min_length=1)
     timeout_s: float = Field(default=10.0, gt=0)
 
 
 class LoginRecipeIn(BaseModel):
+    """How the worker logs a persona in (v1 #1):
+
+    - ``form``: open ``start_url``, run ``steps`` (one ``fill_secret`` types
+      the stored password), check ``success_assertion``;
+    - ``cookie`` / ``header``: no steps. The stored secret is a session the
+      tester copied from their own logged-in browser (the Cookie header's
+      value, or one header such as ``Authorization: Bearer ...``); the
+      worker opens ``start_url`` with it and checks ``success_assertion``.
+    """
+
+    strategy: Literal["form", "cookie", "header"] = "form"
     start_url: str = Field(min_length=1)
-    steps: list[LoginStepIn] = Field(min_length=1)
+    steps: list[LoginStepIn] = Field(default_factory=list)
     success_assertion: SuccessAssertionIn
-    strategy: Literal["form"] = "form"
     max_duration_s: float = Field(default=30.0, gt=0)
+    # strategy == "header": which request header the pasted value goes in.
+    header_name: str | None = Field(default=None, max_length=100)
     # Explicit confirmation that the login page legitimately lives on a
     # host outside the target's domain (SSO). Without it, the API and the
     # worker refuse any navigation off the target (sentinel_core.login_safety).
+    # Form logins only: a pasted session is never sent off the target.
     allow_off_domain: bool = False
 
     @model_validator(mode="after")
-    def _one_secret(self) -> LoginRecipeIn:
-        """The worker attaches the persona's single stored credential to the
-        recipe's fill_secret step (worker auth_adapter.establish_persona), so
-        a recipe needs exactly one credential_ref to bind it to."""
-        refs = {s.credential_ref for s in self.steps if s.action == "fill_secret"}
-        if not refs:
-            raise ValueError("login recipe needs a 'fill_secret' step for the password")
-        if len(refs) > 1:
-            raise ValueError("all 'fill_secret' steps must use the same credential_ref")
+    def _shape_for_strategy(self) -> LoginRecipeIn:
+        if self.strategy == "form":
+            if not self.steps:
+                raise ValueError("a form login needs at least one step")
+            if self.header_name:
+                raise ValueError("header_name is only used by header logins")
+            # The worker attaches the persona's single stored credential to
+            # the recipe's fill_secret step (worker auth_adapter), so a form
+            # recipe needs exactly one credential_ref to bind it to.
+            refs = {s.credential_ref for s in self.steps if s.action == "fill_secret"}
+            if not refs:
+                raise ValueError("login recipe needs a 'fill_secret' step for the password")
+            if len(refs) > 1:
+                raise ValueError("all 'fill_secret' steps must use the same credential_ref")
+            return self
+
+        if self.steps:
+            raise ValueError(f"a {self.strategy} login has no steps; remove them")
+        if self.allow_off_domain:
+            raise ValueError(
+                f"a {self.strategy} login is only ever checked on the target's own site "
+                "(allow_off_domain is not allowed)"
+            )
+        if self.strategy == "header":
+            self.header_name = check_header_name(self.header_name or "")
+        elif self.header_name:
+            raise ValueError("header_name is only used by header logins")
         return self
+
+
+def normalize_secret(strategy: str, recipe: LoginRecipeIn | None, secret: str) -> str:
+    """Checks a cookie/header secret is usable (ValueError with a readable
+    message if not) and returns the form to store. Passwords are untouched."""
+    if strategy == "cookie":
+        parse_cookie_header(secret)
+        return secret.strip()
+    if strategy == "header":
+        return check_header_value(secret, recipe.header_name if recipe else None)
+    return secret
 
 
 class PersonaCreate(BaseModel):
@@ -97,11 +159,20 @@ class PersonaCreate(BaseModel):
     expected_denied: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _recipe_needs_password(self) -> PersonaCreate:
-        if self.login_recipe is not None and self.credential is None:
-            raise ValueError(
-                "a login recipe needs a password (credential) to fill its 'fill_secret' step"
-            )
+    def _recipe_needs_secret(self) -> PersonaCreate:
+        if self.login_recipe is None:
+            return self
+        strategy = self.login_recipe.strategy
+        if self.credential is None:
+            if strategy == "form":
+                raise ValueError(
+                    "a login recipe needs a password (credential) to fill its 'fill_secret' step"
+                )
+            raise ValueError(f"a {strategy} login needs {SECRET_NAME[strategy]} (credential)")
+        self.credential.secret = normalize_secret(
+            strategy, self.login_recipe, self.credential.secret
+        )
+        self.credential.kind = RECIPE_STRATEGY_TO_CREDENTIAL_KIND[strategy]
         return self
 
 
@@ -126,7 +197,25 @@ class PersonaLoginOut(BaseModel):
     response says whether one is stored, not what it is."""
 
     login_recipe: dict | None
+    # True when a secret (password, cookie or header value) is stored.
     has_password: bool
+
+
+class LoginTestStarted(BaseModel):
+    test_id: str
+
+
+class LoginTestOut(BaseModel):
+    """Result of the Test login button. ``status`` is "pending" until the
+    worker answers. The screenshot is the page the browser ended on."""
+
+    status: Literal["pending", "done"]
+    success: bool | None = None
+    error: str | None = None
+    final_url: str | None = None
+    screenshot_jpeg_b64: str | None = None
+    duration_s: float | None = None
+    checked_at: str | None = None
 
 
 class PersonaOut(BaseModel):

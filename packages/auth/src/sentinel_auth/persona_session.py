@@ -7,6 +7,8 @@ Playwright or how the session was established.
 
 from __future__ import annotations
 
+from sentinel_core.session_import import SESSION_HEADERS_KEY
+
 
 class PersonaSession:
     def __init__(
@@ -28,11 +30,12 @@ class PersonaSession:
         return result
 
     def extra_headers(self) -> dict[str, str]:
-        # Bearer-token-in-localStorage apps are common but need the token's
-        # storage key/shape to be told apart from other localStorage data —
-        # left for the AI login recorder (M2) to identify per-app. Cookie
-        # sessions (the common case) work today.
-        return {}
+        # A header login (v1 #1) carries its pasted header in the session
+        # state (sentinel_core.session_import). HttpEngine only sends
+        # requests the ScopeGuard allows, i.e. to the target's own hosts.
+        # Tokens an app keeps in localStorage are still not picked up
+        # automatically — use a header login for those.
+        return dict(self._storage_state.get(SESSION_HEADERS_KEY) or {})
 
     def _domain_matches(self, cookie_domain: str) -> bool:
         host = self._target_host or ""

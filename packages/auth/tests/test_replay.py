@@ -41,7 +41,8 @@ async def test_wrong_password_fails_the_success_assertion(login_server, browser)
 
     assert not result.success
     assert result.storage_state is None
-    assert "Success assertion failed" in result.error
+    assert "Success check failed: the URL never contained" in result.error
+    assert "/login" in result.final_url  # where the browser ended up
 
 
 async def test_missing_credential_against_real_server_fails_with_keyerror_message(
