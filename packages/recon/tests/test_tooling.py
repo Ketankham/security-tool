@@ -75,3 +75,25 @@ async def test_looks_like_projectdiscovery_tool_false_for_shadowing_binary():
         ),
     ):
         assert await looks_like_projectdiscovery_tool("httpx") is False
+
+
+async def test_http_probe_prefers_the_pd_httpx_name():
+    """The worker image installs ProjectDiscovery's httpx as `pd-httpx`
+    (the plain `httpx` on PATH is the Python library's script)."""
+    from unittest.mock import AsyncMock, patch
+
+    from sentinel_recon import http_probe
+
+    async def only_pd(name, **_):
+        return name == "pd-httpx"
+
+    with patch.object(
+        http_probe, "looks_like_projectdiscovery_tool", AsyncMock(side_effect=only_pd)
+    ):
+        assert await http_probe.is_available() is True
+        assert await http_probe._binary() == "pd-httpx"
+
+    with patch.object(
+        http_probe, "looks_like_projectdiscovery_tool", AsyncMock(return_value=False)
+    ):
+        assert await http_probe.is_available() is False

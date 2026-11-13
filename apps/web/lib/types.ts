@@ -131,6 +131,9 @@ export interface ScanPhase {
   stats_json: Record<string, unknown>;
 }
 
+export type ScanSpeed = "gentle" | "normal" | "fast";
+export type ScanDepth = "quick" | "standard" | "deep";
+
 export interface Scan {
   id: string;
   target_id: string;
@@ -139,6 +142,7 @@ export interface Scan {
   is_degraded: boolean;
   degraded_reasons: string[];
   fail_reason: string | null;
+  options: { speed?: ScanSpeed; depth?: ScanDepth };
   created_at: string;
   started_at: string | null;
   finished_at: string | null;

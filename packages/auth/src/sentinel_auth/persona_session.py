@@ -38,5 +38,17 @@ class PersonaSession:
         return dict(self._storage_state.get(SESSION_HEADERS_KEY) or {})
 
     def _domain_matches(self, cookie_domain: str) -> bool:
-        host = self._target_host or ""
-        return host == cookie_domain or host.endswith(f".{cookie_domain}")
+        """A cookie belongs to the target when it was set for the target's
+        host, a parent of it, or one of its subdomains. QA #37: with the
+        target "abhyaasika.com" and the app on www.abhyaasika.com, the
+        session cookie (domain www.abhyaasika.com) used to be dropped, so
+        every "logged-in" replay went out logged out. Requests only ever go
+        to the target's own hosts (ScopeGuard), so this never leaks a
+        cookie to another site."""
+        host = (self._target_host or "").lower()
+        cookie_domain = cookie_domain.lower()
+        return (
+            host == cookie_domain
+            or host.endswith(f".{cookie_domain}")
+            or cookie_domain.endswith(f".{host}")
+        )

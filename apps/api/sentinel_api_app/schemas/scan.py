@@ -4,6 +4,7 @@ from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
+from sentinel_core.scan_options import DEFAULT_DEPTH, DEFAULT_SPEED, Depth, Speed
 from sentinel_core.state_machine import PhaseStatus, ScanPhaseName, ScanState
 
 
@@ -36,6 +37,9 @@ class ScanPhaseOut(BaseModel):
 
 class ScanCreate(BaseModel):
     triggered_by: str = "manual"
+    # See sentinel_core.scan_options: requests/second and pages per persona.
+    speed: Speed = DEFAULT_SPEED
+    depth: Depth = DEFAULT_DEPTH
 
 
 class ScanOut(BaseModel):
@@ -48,6 +52,7 @@ class ScanOut(BaseModel):
     is_degraded: bool
     degraded_reasons: list[str]
     fail_reason: str | None
+    options: dict = {}
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
