@@ -71,4 +71,4 @@ async def client(db_engine, monkeypatch):
 @pytest.fixture
 def no_dispatch(monkeypatch):
     """Scan creation calls out to Celery; tests don't need a live broker."""
-    monkeypatch.setattr("sentinel_api_app.routers.scans.dispatch_scan", lambda scan_id: False)
+    monkeypatch.setattr("sentinel_api_app.routers.scans.dispatch_scan", lambda scan_id: True)

@@ -53,6 +53,16 @@ export type LoginStrategy =
   | "har_replay"
   | "manual_session";
 
+export interface LoginTestResult {
+  status: "pending" | "done";
+  success: boolean | null;
+  error: string | null;
+  final_url: string | null;
+  screenshot_jpeg_b64: string | null;
+  duration_s: number | null;
+  checked_at: string | null;
+}
+
 export interface Persona {
   id: string;
   label: string;
@@ -121,6 +131,7 @@ export interface Scan {
   is_degraded: boolean;
   degraded_reasons: string[];
   fail_reason: string | null;
+  created_at: string;
   started_at: string | null;
   finished_at: string | null;
   llm_tokens_used: number;

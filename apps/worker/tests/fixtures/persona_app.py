@@ -48,7 +48,54 @@ SETTINGS_HTML = """<html><body><h1>Settings</h1><a href="/">Home</a></body></htm
 
 def _session_username(request: Request) -> str | None:
     token = request.cookies.get("session")
+    auth = request.headers.get("authorization", "")
+    if not token and auth.startswith("Bearer "):
+        token = auth[len("Bearer ") :]  # header logins (v1 #1)
     return _SESSIONS.get(token) if token else None
+
+
+# --- extras for cookie/header logins and Test login (v1 #1) ----------------
+
+# Authorization header seen on each /pixel request (a "third-party" host in
+# the tests: http://localhost:<port> while the target is 127.0.0.1).
+PIXEL_AUTH_SEEN: list[str | None] = []
+
+
+async def test_mint(request: Request) -> JSONResponse:
+    """A session token as if the tester had logged in by hand."""
+    token = secrets.token_hex(16)
+    _SESSIONS[token] = VALID_USERNAME
+    return JSONResponse({"token": token})
+
+
+async def spa(request: Request) -> HTMLResponse:
+    """Loads fine, then (logged out) sends the browser to /login from JS a
+    moment later — the redirect a URL check must wait for."""
+    if _session_username(request) is None:
+        return HTMLResponse(
+            "<html><body><h1>Loading</h1><script>"
+            "setTimeout(() => { location.href = '/login'; }, 300);"
+            "</script></body></html>"
+        )
+    return HTMLResponse("<html><body><h1>App</h1></body></html>")
+
+
+async def with_external(request: Request) -> HTMLResponse | RedirectResponse:
+    if _session_username(request) is None:
+        return RedirectResponse(url="/login", status_code=303)
+    port = request.url.port
+    return HTMLResponse(
+        f'<html><body><h1>Dashboard</h1><img src="http://localhost:{port}/pixel"></body></html>'
+    )
+
+
+async def pixel(request: Request) -> HTMLResponse:
+    PIXEL_AUTH_SEEN.append(request.headers.get("authorization"))
+    return HTMLResponse("", status_code=204)
+
+
+async def pixel_log(request: Request) -> JSONResponse:
+    return JSONResponse({"seen": PIXEL_AUTH_SEEN})
 
 
 async def home(request: Request) -> HTMLResponse:
@@ -100,5 +147,10 @@ app = Starlette(
         Route("/dashboard", dashboard),
         Route("/settings", settings_page),
         Route("/api/me", api_me),
+        Route("/test/mint", test_mint),
+        Route("/spa", spa),
+        Route("/with-external", with_external),
+        Route("/pixel", pixel),
+        Route("/test/pixel-log", pixel_log),
     ]
 )

@@ -13,6 +13,10 @@ domain or one of its subdomains. A login hosted elsewhere (SSO, e.g.
 login.microsoftonline.com) is allowed only when the recipe carries an
 explicit ``allow_off_domain: true``, which the dashboard sets from a
 confirmation checkbox.
+
+Cookie and header logins (``strategy`` "cookie" / "header") never get that
+exception: their page to check is where the pasted session is sent, and a
+session must only ever go to the target's own hosts.
 """
 
 from __future__ import annotations
@@ -46,7 +50,10 @@ def login_navigation_problems(recipe: Mapping[str, Any], target_root_domain: str
         if step.get("action") == "goto":
             urls.append((f"step {i + 1} (goto)", str(step.get("value") or "")))
 
-    allow_off_domain = bool(recipe.get("allow_off_domain"))
+    session_login = (recipe.get("strategy") or "form") != "form"
+    allow_off_domain = bool(recipe.get("allow_off_domain")) and not session_login
+    if session_login:
+        urls[0] = ("page to check the login on", urls[0][1])
     root = _bare_host(target_root_domain)
     problems: list[str] = []
     for where, url in urls:
@@ -58,7 +65,12 @@ def login_navigation_problems(recipe: Mapping[str, Any], target_root_domain: str
         if not host:
             problems.append(f"{where} has no host name (got {url!r})")
             continue
-        if not allow_off_domain and not host_is_on_target(host, target_root_domain):
+        if session_login and not host_is_on_target(host, target_root_domain):
+            problems.append(
+                f"{where} is on {host}, not on {root} or its subdomains. A pasted cookie or "
+                "header is only ever sent to the target's own site."
+            )
+        elif not allow_off_domain and not host_is_on_target(host, target_root_domain):
             problems.append(
                 f"{where} is on {host}, not on {root} or its subdomains. If this is the "
                 "client's real login (e.g. SSO), confirm the other domain explicitly "

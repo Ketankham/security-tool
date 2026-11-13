@@ -97,6 +97,9 @@ services:
       - sentinel_worker_app.celery_app
       - worker
       - --loglevel=INFO
+      # Scans ("celery" queue), and login tests too when it is idle.
+      - --queues=celery,logins
+      - --hostname=scans@%h
       # One scan at a time: headless Chromium is the memory hog on a box
       # shared with the accounting app's MySQL.
       - --concurrency=1
@@ -105,6 +108,35 @@ services:
     # Chromium crashes with Docker's default 64 MB /dev/shm.
     shm_size: "512mb"
     mem_limit: 2g
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Answers the dashboard's "Test login" button within seconds even while
+  # the main worker is busy with a long scan. Login tests only.
+  worker-logins:
+    image: sentinel-worker:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *app-env
+      # Only the scan worker may close scans cut off by a restart
+      # (scan_runner.fail_interrupted_scans).
+      SWEEP_INTERRUPTED_SCANS: "false"
+    command:
+      - celery
+      - --workdir=apps/worker
+      - -A
+      - sentinel_worker_app.celery_app
+      - worker
+      - --loglevel=INFO
+      - --queues=logins
+      - --hostname=logins@%h
+      - --concurrency=1
+    shm_size: "256mb"
+    mem_limit: 1g
     depends_on:
       postgres:
         condition: service_healthy

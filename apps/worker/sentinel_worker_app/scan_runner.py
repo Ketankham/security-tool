@@ -37,7 +37,13 @@ from redis.asyncio import Redis
 from sentinel_auth.browser import chromium_launch_kwargs
 from sentinel_core.crypto import EnvelopeCrypto, LocalMasterKeyProvider
 from sentinel_core.rate_limiter import RateLimiter
-from sentinel_core.state_machine import PhaseStatus, ScanPhaseName, ScanState, ScanStateMachine
+from sentinel_core.state_machine import (
+    TERMINAL_STATES,
+    PhaseStatus,
+    ScanPhaseName,
+    ScanState,
+    ScanStateMachine,
+)
 from sentinel_crawler import PersonaCrawler, SurfaceMap
 from sentinel_db import open_session
 from sentinel_db.models import (
@@ -158,15 +164,27 @@ async def _run_auth_establishing(
 
     try:
         for persona in configured_personas:
-            result = await establish_persona(
-                persona=persona,
-                browser=browser,
-                crypto=crypto,
-                org_data_key=org_data_key,
-                engine=engine,
-                oracle_probe_url=probe_url,
-                target_root_domain=target.root_domain,
-            )
+            try:
+                result = await establish_persona(
+                    persona=persona,
+                    browser=browser,
+                    crypto=crypto,
+                    org_data_key=org_data_key,
+                    engine=engine,
+                    oracle_probe_url=probe_url,
+                    target_root_domain=target.root_domain,
+                )
+            except Exception as exc:  # noqa: BLE001 — one persona must never end the scan
+                log.error(
+                    "scan_runner.persona_auth_crashed", persona_id=str(persona.id), exc_info=True
+                )
+                persona.is_available = False
+                persona.unavailable_reason = (
+                    f"Login crashed: {type(exc).__name__}: {str(exc).splitlines()[0][:300]}"
+                    if str(exc)
+                    else f"Login crashed: {type(exc).__name__}"
+                )
+                continue
             persona.is_available = result.available
             persona.unavailable_reason = result.unavailable_reason
             if not result.available:
@@ -311,6 +329,7 @@ async def run_scan(scan_id: str) -> None:
         phase = await _get_or_create_phase(session, scan, ScanPhaseName.SCOPE_VERIFYING)
         machine.transition(ScanState.SCOPE_VERIFYING)
         scan.state = machine.current
+        scan.started_at = scan.started_at or datetime.now(UTC)
         await _start_phase(session, phase)
 
         if get_settings().require_ownership_verification and not target.is_scannable:
@@ -474,25 +493,38 @@ async def run_scan(scan_id: str) -> None:
             finally:
                 await redis_client.aclose()
 
+            failed = [p for p in configured_personas if not p.is_available]
+            for persona in failed:
+                scan.is_degraded = True
+                scan.degraded_reasons = [
+                    *scan.degraded_reasons,
+                    f"Login for '{persona.label}' failed, so that role was not tested: "
+                    f"{persona.unavailable_reason}",
+                ]
+
             if auth_stats["personas_available"] == 0:
-                # Every configured persona failed to log in at all — the
-                # state machine's genuine FAILED_AUTH case (docs/01 §5),
-                # distinct from "some personas unavailable but others work".
-                machine.transition(ScanState.FAILED_AUTH)
-                scan.state = machine.current
+                # v1: a broken login must not throw away the rest of the
+                # scan (recon, the anonymous crawl, and checks that need no
+                # login still have value). Record it loudly and carry on as
+                # an anonymous visitor; the persona rows and the notes above
+                # say exactly which login failed and why.
+                scan.is_degraded = True
+                scan.degraded_reasons = [
+                    *scan.degraded_reasons,
+                    "No login worked, so the scan continued as an anonymous visitor only: "
+                    "checks that compare what different users can reach were skipped. "
+                    "Fix the login (use Test login on the target page), then retry the scan.",
+                ]
                 await _finish_phase(
                     session,
                     phase,
                     status=PhaseStatus.FAILED,
                     stats=auth_stats,
-                    error="All configured personas failed to establish a session.",
+                    error="All configured logins failed; continuing anonymously.",
                 )
-                scan.finished_at = datetime.now(UTC)
-                await session.commit()
-                log.info("scan_runner.failed_auth", scan_id=scan_id)
-                return
-
-            await _finish_phase(session, phase, status=PhaseStatus.COMPLETED, stats=auth_stats)
+                log.info("scan_runner.all_logins_failed_continuing", scan_id=scan_id)
+            else:
+                await _finish_phase(session, phase, status=PhaseStatus.COMPLETED, stats=auth_stats)
 
         machine.transition(ScanState.CRAWLING)
         scan.state = machine.current
@@ -714,3 +746,68 @@ async def run_scan(scan_id: str) -> None:
             findings_probable=access_control_stats.probable,
             report_id=str(report_row.id),
         )
+
+
+# --- Failure handling (v1: "a scan never stays stuck") ------------------------
+
+# States a scan is in only while a worker is actively running it.
+_IN_PROGRESS_STATES = frozenset(
+    s
+    for s in ScanState
+    if s not in TERMINAL_STATES and s not in (ScanState.QUEUED, ScanState.PAUSED)
+)
+
+
+def _close_scan_as_failed(scan: Scan, reason: str) -> None:
+    """Terminal FAILED with a readable reason; any phase left RUNNING is
+    closed as FAILED with the same reason so the dashboard shows where it
+    stopped."""
+    now = datetime.now(UTC)
+    scan.state = ScanState.FAILED
+    scan.fail_reason = reason[:1000]
+    scan.finished_at = now
+    for phase in scan.phases:
+        if phase.status is PhaseStatus.RUNNING:
+            phase.status = PhaseStatus.FAILED
+            phase.finished_at = now
+            phase.error = reason[:2000]
+
+
+async def mark_scan_failed(scan_id: str, reason: str) -> bool:
+    """Called by the Celery task when run_scan raised. Returns False when
+    the scan is missing or already terminal (nothing to do)."""
+    async with open_session() as session:
+        scan = await session.get(Scan, uuid.UUID(scan_id), options=[selectinload(Scan.phases)])
+        if scan is None or scan.state in TERMINAL_STATES:
+            return False
+        running = next((p.name.value for p in scan.phases if p.status is PhaseStatus.RUNNING), None)
+        where = f" during {running.replace('_', ' ')}" if running else ""
+        _close_scan_as_failed(scan, f"The scan stopped{where}: {reason}")
+        await session.commit()
+        log.info("scan_runner.marked_failed", scan_id=scan_id, phase=running)
+        return True
+
+
+async def fail_interrupted_scans() -> int:
+    """Run once when the scan worker starts. The deployment runs exactly one
+    scan worker with concurrency 1, so at start-up nothing can legitimately
+    be mid-scan: any scan still in a running state was cut off by a crash,
+    an out-of-memory kill or a deploy, and Celery will not hand it out
+    again. Without this it would show "Crawling…" forever."""
+    async with open_session() as session:
+        result = await session.execute(
+            select(Scan)
+            .where(Scan.state.in_(list(_IN_PROGRESS_STATES)))
+            .options(selectinload(Scan.phases))
+        )
+        scans = list(result.scalars().all())
+        for scan in scans:
+            _close_scan_as_failed(
+                scan,
+                "The scan was interrupted: the scan worker restarted while it was running "
+                "(a deploy, a crash or running out of memory). Use Retry to run it again.",
+            )
+        await session.commit()
+        if scans:
+            log.warning("scan_runner.failed_interrupted_scans", count=len(scans))
+        return len(scans)

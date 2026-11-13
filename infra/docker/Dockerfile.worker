@@ -50,4 +50,5 @@ RUN playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 
 # --workdir is a global celery option: it must come before the subcommand.
-CMD ["celery", "--workdir", "apps/worker", "-A", "sentinel_worker_app.celery_app", "worker", "--loglevel", "INFO"]
+# Scans plus login tests (the "logins" queue; see celery_app.py).
+CMD ["celery", "--workdir", "apps/worker", "-A", "sentinel_worker_app.celery_app", "worker", "--loglevel", "INFO", "--queues", "celery,logins"]

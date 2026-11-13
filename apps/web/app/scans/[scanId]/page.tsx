@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { use } from "react";
+import { useRouter } from "next/navigation";
+import { use, useState } from "react";
 import { OrgGate } from "../../OrgGate";
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 import { usePoll } from "@/lib/usePoll";
 import { STATE_LABEL, isFailureState, isTerminal } from "@/lib/scan";
 import { PhaseBoard } from "@/components/PhaseBoard";
@@ -55,6 +56,7 @@ function ScanDetail({ scanId }: { scanId: string }) {
             <h1 style={{ margin: 0 }}>Scan</h1>
             <StatePill scan={scan} />
             {!terminal && <span className="hint">live · refreshing every 3s</span>}
+            {terminal && <RetryButton scan={scan} />}
           </div>
 
           {scan.fail_reason && (
@@ -121,4 +123,35 @@ function StatePill({ scan }: { scan: Scan }) {
         ? "muted"
         : "running";
   return <span className={`badge tone-${tone}`}>{STATE_LABEL[scan.state]}</span>;
+}
+
+// v1 #2: any finished scan can be run again. A failed one gets a prominent
+// "Retry scan"; a completed one a quieter "Run again". Both start a fresh
+// scan of the same target (the old one stays as history) and open it.
+function RetryButton({ scan }: { scan: Scan }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const failed = scan.state !== "complete";
+
+  async function retry() {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await api.retryScan(scan.id);
+      router.push(`/scans/${next.id}`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : String(err));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+      {error && <span className="field-error" style={{ display: "inline" }}>{error}</span>}
+      <button className={failed ? "btn-primary" : undefined} onClick={retry} disabled={busy}>
+        {busy ? "Starting…" : failed ? "Retry scan" : "Run again"}
+      </button>
+    </span>
+  );
 }

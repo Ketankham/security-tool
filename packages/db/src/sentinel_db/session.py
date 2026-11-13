@@ -75,3 +75,18 @@ async def open_session() -> AsyncIterator[AsyncSession]:
     factory = _get_default_factory()
     async with factory() as session:
         yield session
+
+
+async def dispose_default_engine() -> None:
+    """Close the default engine's pooled connections and forget it.
+
+    asyncpg connections belong to the event loop that opened them. A Celery
+    worker process runs each task in its own ``asyncio.run`` loop, so a
+    pooled connection left over from the previous task's (closed) loop
+    cannot be reused. Call this at the end of every such loop."""
+    global _engine, _session_factory
+    engine = _engine
+    _engine = None
+    _session_factory = None
+    if engine is not None:
+        await engine.dispose()

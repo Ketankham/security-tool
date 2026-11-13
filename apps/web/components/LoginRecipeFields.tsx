@@ -2,29 +2,43 @@
 
 // The "how to log in as this persona" section, shared by Add persona and
 // the per-persona "Set up login" editor. Produces the API's LoginRecipeIn
-// (apps/api/.../schemas/persona.py) plus the password, which is sent as a
-// separate encrypted credential and never placed inside the recipe: the
-// recipe's fill_secret step only names it ("password").
+// (apps/api/.../schemas/persona.py) plus the secret, which is sent as a
+// separate encrypted credential and never placed inside the recipe.
+//
+// Three methods (v1 #1):
+//   form   — the worker types a username + password into the login page;
+//   cookie — the tester logs in by hand and pastes the Cookie header value;
+//   header — the tester pastes one request header (e.g. Authorization: Bearer …).
+// cookie/header are for logins a script can't get through (CAPTCHA, SSO, OTP).
 
-export type SuccessKind = "url_contains" | "selector_visible" | "selector_hidden";
+export type SuccessKind = "url_contains" | "url_not_contains" | "selector_visible" | "selector_hidden";
+export type LoginMethod = "form" | "cookie" | "header";
 
 export interface LoginForm {
+  method: LoginMethod;
+  // form: the login page. cookie/header: a page only a logged-in user sees.
   loginUrl: string;
   usernameSelector: string;
   username: string;
   passwordSelector: string;
+  // The secret: password (form), Cookie header value, or header value.
   password: string;
   submitSelector: string;
   successKind: SuccessKind;
   successValue: string;
+  headerName: string;
   advanced: boolean;
   json: string;
   // The user confirmed the login page legitimately lives off the target's
   // domain (SSO). Required by the API for any off-domain navigation (QA #23).
   allowOffDomain: boolean;
+  // The method of the login as saved (null when nothing is saved yet).
+  // Switching method needs a new secret: a stored password is not a cookie.
+  savedMethod: LoginMethod | null;
 }
 
 export const EMPTY_LOGIN: LoginForm = {
+  method: "form",
   loginUrl: "",
   usernameSelector: "",
   username: "",
@@ -33,19 +47,35 @@ export const EMPTY_LOGIN: LoginForm = {
   submitSelector: "button[type=submit]",
   successKind: "url_contains",
   successValue: "",
+  headerName: "Authorization",
   advanced: false,
   json: "",
   allowOffDomain: false,
+  savedMethod: null,
 };
 
 const CREDENTIAL_REF = "password";
 
+export const METHOD_LABEL: Record<LoginMethod, string> = {
+  form: "Login form",
+  cookie: "Pasted cookie",
+  header: "Pasted header",
+};
+
+const SECRET_LABEL: Record<LoginMethod, string> = {
+  form: "Password",
+  cookie: "Cookie value",
+  header: "Header value",
+};
+
 export type LoginStepJson = Record<string, string | number | null | undefined>;
 
 export type LoginRecipe = {
+  strategy?: LoginMethod;
   start_url: string;
   steps: LoginStepJson[];
   success_assertion: { kind: SuccessKind; value: string; timeout_s?: number };
+  header_name?: string | null;
   allow_off_domain?: boolean;
   [extra: string]: unknown;
 };
@@ -73,10 +103,10 @@ function onTarget(host: string, rootDomain: string): boolean {
   return host === root || host.endsWith(`.${root}`);
 }
 
-function urlProblem(url: string): string | null {
+function urlProblem(url: string, what = "login page URL"): string | null {
   const v = url.trim();
-  if (!v) return "Enter the login page URL.";
-  if (!/^https?:\/\//i.test(v)) return "The login page URL must start with http:// or https://.";
+  if (!v) return `Enter the ${what}.`;
+  if (!/^https?:\/\//i.test(v)) return `The ${what} must start with http:// or https://.`;
   if (!hostOf(v)) return "That URL has no valid host name.";
   return null;
 }
@@ -93,9 +123,55 @@ function offDomainHosts(recipe: { start_url?: unknown; steps?: unknown }, rootDo
   return Array.from(new Set(hosts));
 }
 
+// --- pasted sessions (mirrors sentinel_core.session_import) --------------------
+
+const TOKEN_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const FORBIDDEN_HEADERS = new Set([
+  "host", "cookie", "content-length", "content-type", "transfer-encoding", "connection",
+  "upgrade", "te", "trailer", "keep-alive", "proxy-authorization", "proxy-connection",
+]);
+
+function cookieProblem(raw: string): string | null {
+  let text = raw.trim();
+  if (/^cookie:/i.test(text)) text = text.slice(7).trim();
+  if (!text) return "Paste at least one cookie, e.g. sessionid=abc123";
+  if (/[\r\n]/.test(text)) return "The cookie value must be on a single line.";
+  for (const part of text.split(";").map((p) => p.trim()).filter(Boolean)) {
+    const eq = part.indexOf("=");
+    const name = eq > 0 ? part.slice(0, eq).trim() : "";
+    if (!name) return `"${part.slice(0, 40)}" is not a name=value cookie.`;
+    if (!TOKEN_RE.test(name)) return `"${name.slice(0, 40)}" is not a valid cookie name.`;
+  }
+  return null;
+}
+
+function headerNameProblem(name: string): string | null {
+  const n = name.trim();
+  if (!n) return "Enter the header name, e.g. Authorization";
+  if (!TOKEN_RE.test(n)) return "That is not a valid header name (no spaces or colons).";
+  if (n.toLowerCase() === "cookie") return "Use “Pasted cookie” for cookies.";
+  if (FORBIDDEN_HEADERS.has(n.toLowerCase())) return `The ${n} header can't be used for logging in.`;
+  return null;
+}
+
+function headerValueProblem(value: string): string | null {
+  if (!value.trim()) return "Paste the header value, e.g. Bearer eyJhbGci…";
+  if (/[\r\n]/.test(value.trim())) return "The header value must be on a single line.";
+  return null;
+}
+
 // --- building / validating ----------------------------------------------------
 
 function simpleRecipe(f: LoginForm): LoginRecipe {
+  if (f.method !== "form") {
+    return {
+      strategy: f.method,
+      start_url: f.loginUrl.trim(),
+      steps: [],
+      success_assertion: { kind: f.successKind, value: f.successValue.trim() },
+      ...(f.method === "header" ? { header_name: f.headerName.trim() } : {}),
+    };
+  }
   const steps: LoginStepJson[] = [];
   if (f.usernameSelector.trim()) {
     steps.push({ action: "fill", selector: f.usernameSelector.trim(), value: f.username });
@@ -130,14 +206,42 @@ function parseJson(f: LoginForm): { recipe?: LoginRecipe; error?: string } {
   return { recipe: r };
 }
 
+/** Whether a new secret must be entered: nothing stored yet, or the method
+ * changed since the login was saved. */
+export function secretRequired(f: LoginForm, passwordRequired: boolean): boolean {
+  return passwordRequired || (f.savedMethod !== null && f.savedMethod !== f.method);
+}
+
 /**
  * Every problem at once, keyed by field (QA #28), so the form can show them
  * all inline instead of one message per Save. `passwordRequired` is false
- * when editing a persona that already has a password stored.
+ * when editing a persona that already has a secret stored.
  */
 export function validateLogin(f: LoginForm, passwordRequired: boolean, rootDomain: string): FieldErrors {
   const errors: FieldErrors = {};
   let recipe: LoginRecipe | undefined;
+  const needSecret = secretRequired(f, passwordRequired);
+
+  if (f.method !== "form") {
+    const urlErr = urlProblem(f.loginUrl, "page to check");
+    if (urlErr) errors.loginUrl = urlErr;
+    else {
+      const host = hostOf(f.loginUrl.trim());
+      if (host && !onTarget(host, rootDomain)) {
+        errors.loginUrl = `Use a page on ${rootDomain}: a pasted session is only ever sent to the target's own site.`;
+      }
+    }
+    if (!f.successValue.trim()) errors.successValue = "Say how to tell the session works (e.g. URL doesn't contain /login).";
+    if (f.method === "header") {
+      const hErr = headerNameProblem(f.headerName);
+      if (hErr) errors.headerName = hErr;
+    }
+    if (f.password || needSecret) {
+      const sErr = f.method === "cookie" ? cookieProblem(f.password) : headerValueProblem(f.password);
+      if (sErr) errors.password = sErr;
+    }
+    return errors;
+  }
 
   if (f.advanced) {
     const { recipe: r, error } = parseJson(f);
@@ -160,7 +264,7 @@ export function validateLogin(f: LoginForm, passwordRequired: boolean, rootDomai
     if (!urlErr) recipe = simpleRecipe(f);
   }
 
-  if (passwordRequired && !f.password) errors.password = "Enter the password for this login.";
+  if (needSecret && !f.password) errors.password = "Enter the password for this login.";
 
   if (recipe && offDomainHosts(recipe, rootDomain).length > 0 && !f.allowOffDomain) {
     errors.allowOffDomain = "Confirm the other domain below, or use a login page on the target.";
@@ -171,6 +275,9 @@ export function validateLogin(f: LoginForm, passwordRequired: boolean, rootDomai
 export function buildLogin(f: LoginForm, passwordRequired: boolean, rootDomain: string): BuiltLogin {
   const errors = validateLogin(f, passwordRequired, rootDomain);
   if (Object.keys(errors).length > 0) return { ok: false, errors };
+  if (f.method !== "form") {
+    return { ok: true, recipe: simpleRecipe(f), password: f.password.trim() ? f.password.trim() : null };
+  }
   const base = f.advanced ? parseJson(f).recipe! : simpleRecipe(f);
   const recipe: LoginRecipe = { ...base, allow_off_domain: f.allowOffDomain };
   return { ok: true, recipe, password: f.password ? f.password : null };
@@ -197,13 +304,27 @@ function cleanStep(s: LoginStepJson): LoginStepJson {
 
 /** Saved recipe -> form. Uses the simple fields when the recipe has their
  * exact shape ([fill username], fill_secret, click); anything else opens in
- * the JSON editor so nothing is silently dropped. Password stays blank. */
+ * the JSON editor so nothing is silently dropped. The secret stays blank. */
 export function loginFormFromRecipe(recipe: LoginRecipe | null): LoginForm {
   if (!recipe) return EMPTY_LOGIN;
-  const steps = (recipe.steps ?? []).map(cleanStep);
-  const allowOffDomain = !!recipe.allow_off_domain;
+  const method: LoginMethod =
+    recipe.strategy === "cookie" || recipe.strategy === "header" ? recipe.strategy : "form";
   const assertion = recipe.success_assertion ?? { kind: "url_contains", value: "" };
 
+  if (method !== "form") {
+    return {
+      ...EMPTY_LOGIN,
+      method,
+      savedMethod: method,
+      loginUrl: recipe.start_url ?? "",
+      successKind: assertion.kind,
+      successValue: assertion.value ?? "",
+      headerName: recipe.header_name || "Authorization",
+    };
+  }
+
+  const steps = (recipe.steps ?? []).map(cleanStep);
+  const allowOffDomain = !!recipe.allow_off_domain;
   const fill = steps.length === 3 ? steps[0] : null;
   const [secret, click] = steps.length === 3 ? steps.slice(1) : steps;
   const simple =
@@ -220,6 +341,7 @@ export function loginFormFromRecipe(recipe: LoginRecipe | null): LoginForm {
   if (simple) {
     return {
       ...EMPTY_LOGIN,
+      savedMethod: "form",
       loginUrl: recipe.start_url ?? "",
       usernameSelector: String(fill?.selector ?? ""),
       username: String(fill?.value ?? ""),
@@ -233,21 +355,24 @@ export function loginFormFromRecipe(recipe: LoginRecipe | null): LoginForm {
   const {
     allow_off_domain: _omit,
     steps: _rawSteps,
-    strategy,
+    strategy: _strategy,
+    header_name: _header,
     start_url,
     success_assertion,
     ...rest
   } = recipe;
   void _omit;
   void _rawSteps;
-  const forJson = {
-    start_url,
-    steps,
-    success_assertion,
-    ...rest,
-    ...(strategy && strategy !== "form" ? { strategy } : {}),
+  void _strategy;
+  void _header;
+  const forJson = { start_url, steps, success_assertion, ...rest };
+  return {
+    ...EMPTY_LOGIN,
+    savedMethod: "form",
+    advanced: true,
+    json: JSON.stringify(forJson, null, 2),
+    allowOffDomain,
   };
-  return { ...EMPTY_LOGIN, advanced: true, json: JSON.stringify(forJson, null, 2), allowOffDomain };
 }
 
 // --- component ---------------------------------------------------------------------
@@ -257,6 +382,57 @@ function FieldError({ msg }: { msg?: string }) {
   return (
     <div className="field-error" role="alert">
       {msg}
+    </div>
+  );
+}
+
+const SUCCESS_PLACEHOLDER: Record<SuccessKind, string> = {
+  url_contains: "/dashboard",
+  url_not_contains: "/login",
+  selector_visible: "#logout",
+  selector_hidden: "#login-form",
+};
+
+function SuccessCheck({
+  value,
+  set,
+  error,
+}: {
+  value: LoginForm;
+  set: <K extends keyof LoginForm>(k: K, v: LoginForm[K]) => void;
+  error?: string;
+}) {
+  const isUrl = value.successKind === "url_contains" || value.successKind === "url_not_contains";
+  return (
+    <div>
+      <label>{value.method === "form" ? "Login succeeded if *" : "Session works if *"}</label>
+      <div style={{ display: "flex", gap: 6 }}>
+        <select
+          value={value.successKind}
+          onChange={(e) => set("successKind", e.target.value as SuccessKind)}
+          style={{ maxWidth: 190 }}
+          aria-label="Success check"
+        >
+          <option value="url_contains">URL contains</option>
+          <option value="url_not_contains">URL doesn&apos;t contain</option>
+          <option value="selector_visible">element is visible</option>
+          <option value="selector_hidden">element is gone</option>
+        </select>
+        <input
+          className={isUrl ? undefined : "mono"}
+          value={value.successValue}
+          placeholder={SUCCESS_PLACEHOLDER[value.successKind]}
+          aria-label="Success check value"
+          onChange={(e) => set("successValue", e.target.value)}
+        />
+      </div>
+      <FieldError msg={error} />
+      {value.successKind === "url_not_contains" && (
+        <div className="hint">
+          Passes if, after the page settles, the browser is <i>not</i> on a URL containing this — e.g.{" "}
+          <span className="mono">/sign-in</span> when a dead session gets sent back to the sign-in page.
+        </div>
+      )}
     </div>
   );
 }
@@ -282,7 +458,137 @@ export function LoginRecipeFields({
   const set = <K extends keyof LoginForm>(k: K, v: LoginForm[K]) => onChange({ ...value, [k]: v });
   const errors = validateLogin(value, passwordRequired, rootDomain);
   const err = (k: keyof LoginForm) => (showErrors ? errors[k] : undefined);
+  const needSecret = secretRequired(value, passwordRequired);
+  const switching = value.savedMethod !== null && value.savedMethod !== value.method;
 
+  function chooseMethod(method: LoginMethod) {
+    if (method === value.method) return;
+    const next: LoginForm = { ...value, method, password: "" };
+    // A pasted session is usually checked by "not bounced to the login page".
+    if (method !== "form" && !value.successValue.trim()) next.successKind = "url_not_contains";
+    if (method === "form" && !value.successValue.trim()) next.successKind = "url_contains";
+    onChange(next);
+  }
+
+  return (
+    <div>
+      <div role="radiogroup" aria-label="Login method" style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "8px 0" }}>
+        {(["form", "cookie", "header"] as LoginMethod[]).map((m) => (
+          <button
+            key={m}
+            type="button"
+            role="radio"
+            aria-checked={value.method === m}
+            className={value.method === m ? "btn-sm btn-primary" : "btn-sm"}
+            onClick={() => chooseMethod(m)}
+          >
+            {METHOD_LABEL[m]}
+          </button>
+        ))}
+      </div>
+      {switching && (
+        <div className="notice" style={{ marginBottom: 8 }}>
+          Switching from {METHOD_LABEL[value.savedMethod!].toLowerCase()} to{" "}
+          {METHOD_LABEL[value.method].toLowerCase()}: enter the {SECRET_LABEL[value.method].toLowerCase()} below.
+        </div>
+      )}
+
+      {value.method === "form" ? (
+        <FormMethodFields
+          value={value}
+          set={set}
+          onChange={onChange}
+          err={err}
+          rootDomain={rootDomain}
+          needSecret={needSecret}
+          passwordHint={passwordHint}
+        />
+      ) : (
+        <>
+          <div className="hint" style={{ marginBottom: 8 }}>
+            For logins a script can&apos;t get through (CAPTCHA, SSO, one-time codes). Log in to the site
+            yourself in Chrome, press <b>F12</b> → <b>Network</b>, reload, click any request to{" "}
+            <span className="mono">{rootDomain}</span>, and under <b>Request Headers</b> copy{" "}
+            {value.method === "cookie" ? (
+              <>the value of <span className="mono">Cookie</span></>
+            ) : (
+              <>the header that carries the login, usually <span className="mono">Authorization</span></>
+            )}
+            . Sessions expire: when Test login starts failing, paste a fresh one.
+          </div>
+          <div className="row">
+            <div>
+              <label>Page only a logged-in user can see *</label>
+              <input
+                value={value.loginUrl}
+                placeholder={`https://${rootDomain}/dashboard`}
+                aria-invalid={!!err("loginUrl")}
+                onChange={(e) => set("loginUrl", e.target.value)}
+              />
+              <FieldError msg={err("loginUrl")} />
+            </div>
+          </div>
+          <div className="row">
+            {value.method === "header" && (
+              <div style={{ maxWidth: 220 }}>
+                <label>Header name *</label>
+                <input
+                  className="mono"
+                  value={value.headerName}
+                  onChange={(e) => set("headerName", e.target.value)}
+                />
+                <FieldError msg={err("headerName")} />
+              </div>
+            )}
+            <div>
+              <label>
+                {SECRET_LABEL[value.method]} (stored encrypted){needSecret ? " *" : ""}
+              </label>
+              <textarea
+                className="mono"
+                rows={2}
+                value={value.password}
+                spellCheck={false}
+                autoComplete="off"
+                placeholder={
+                  !needSecret && passwordHint
+                    ? passwordHint
+                    : value.method === "cookie"
+                      ? "sessionid=abc123; csrftoken=…"
+                      : "Bearer eyJhbGciOi…"
+                }
+                onChange={(e) => set("password", e.target.value)}
+                style={{ width: "100%" }}
+              />
+              <FieldError msg={err("password")} />
+            </div>
+          </div>
+          <div className="row">
+            <SuccessCheck value={value} set={set} error={err("successValue")} />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function FormMethodFields({
+  value,
+  set,
+  onChange,
+  err,
+  rootDomain,
+  needSecret,
+  passwordHint,
+}: {
+  value: LoginForm;
+  set: <K extends keyof LoginForm>(k: K, v: LoginForm[K]) => void;
+  onChange: (next: LoginForm) => void;
+  err: (k: keyof LoginForm) => string | undefined;
+  rootDomain: string;
+  needSecret: boolean;
+  passwordHint?: string;
+}) {
   // Unsafe-URL feedback doesn't wait for Save (QA #23): javascript:, data:,
   // missing host — once something has been typed.
   const liveUrlError = !value.advanced && value.loginUrl.trim() ? urlProblem(value.loginUrl) : null;
@@ -302,7 +608,7 @@ export function LoginRecipeFields({
   }
 
   return (
-    <div>
+    <>
       {!value.advanced ? (
         <>
           <div className="row">
@@ -358,8 +664,10 @@ export function LoginRecipeFields({
               <span className="mono">fill</span> (selector, value), <span className="mono">fill_secret</span>{" "}
               (selector, credential_ref — types the password below), <span className="mono">click</span>,{" "}
               <span className="mono">wait_for_selector</span> (selector), <span className="mono">goto</span>,{" "}
-              <span className="mono">wait_for_url</span> (value). Use this for two-page logins (email → Next
-              → password).
+              <span className="mono">wait_for_url</span> (value). Success check kinds:{" "}
+              <span className="mono">url_contains</span>, <span className="mono">url_not_contains</span>,{" "}
+              <span className="mono">selector_visible</span>, <span className="mono">selector_hidden</span>.
+              Use this for two-page logins (email → Next → password).
             </div>
           </div>
         </div>
@@ -397,12 +705,12 @@ export function LoginRecipeFields({
           </div>
         )}
         <div>
-          <label>Password (stored encrypted){passwordRequired ? " *" : ""}</label>
+          <label>Password (stored encrypted){needSecret ? " *" : ""}</label>
           <input
             type="password"
             value={value.password}
             autoComplete="new-password"
-            placeholder={passwordHint}
+            placeholder={needSecret ? undefined : passwordHint}
             onChange={(e) => set("password", e.target.value)}
           />
           <FieldError msg={err("password")} />
@@ -420,27 +728,7 @@ export function LoginRecipeFields({
             />
             <FieldError msg={err("submitSelector")} />
           </div>
-          <div>
-            <label>Login succeeded if *</label>
-            <div style={{ display: "flex", gap: 6 }}>
-              <select
-                value={value.successKind}
-                onChange={(e) => set("successKind", e.target.value as SuccessKind)}
-                style={{ maxWidth: 170 }}
-              >
-                <option value="url_contains">URL contains</option>
-                <option value="selector_visible">element is visible</option>
-                <option value="selector_hidden">element is gone</option>
-              </select>
-              <input
-                className={value.successKind === "url_contains" ? undefined : "mono"}
-                value={value.successValue}
-                placeholder={value.successKind === "url_contains" ? "/dashboard" : "#logout"}
-                onChange={(e) => set("successValue", e.target.value)}
-              />
-            </div>
-            <FieldError msg={err("successValue")} />
-          </div>
+          <SuccessCheck value={value} set={set} error={err("successValue")} />
         </div>
       )}
 
@@ -448,12 +736,12 @@ export function LoginRecipeFields({
         Finding selectors: open the login page in Chrome, right-click the field → <b>Inspect</b>, and
         use its id (<span className="mono">id=&quot;email&quot;</span> →{" "}
         <span className="mono">#email</span>) or name (
-        <span className="mono">input[name=email]</span>). Logins behind CAPTCHA or one-time codes
-        can&apos;t be automated — ask the client for a test account without them.{" "}
+        <span className="mono">input[name=email]</span>). Behind a CAPTCHA, SSO or one-time code? Use{" "}
+        <b>Pasted cookie</b> or <b>Pasted header</b> above instead.{" "}
         <button className="btn-sm" type="button" onClick={toggleAdvanced}>
           {value.advanced ? "Back to simple fields" : "Advanced: edit steps as JSON"}
         </button>
       </div>
-    </div>
+    </>
   );
 }

@@ -15,6 +15,7 @@ import asyncio
 import importlib.util
 import os
 import socket
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -46,6 +47,9 @@ def _load_module(unique_name: str, path: Path) -> ModuleType:
     spec = importlib.util.spec_from_file_location(unique_name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    # Registered so tests can import a fixture's module-level state (e.g.
+    # persona_app.PIXEL_AUTH_SEEN) by this unique name.
+    sys.modules[unique_name] = module
     spec.loader.exec_module(module)
     return module
 
