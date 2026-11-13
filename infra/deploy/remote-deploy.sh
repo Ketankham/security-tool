@@ -9,11 +9,7 @@
 #       /opt/sentinel/.secrets from then on. Set them only to supply your own
 #       values; a supplied KMS key / DB password that differs from the stored
 #       one aborts the deploy instead of silently breaking data.
-#   DASHBOARD_PASSWORD
-#       Password for https://<domain>/security (user: DASHBOARD_USER, default
-#       "sentinel"). Generated on the server on first deploy and kept in
-#       /opt/sentinel/.secrets when unset; setting the GitHub secret replaces it.
-#   DASHBOARD_USER  ANTHROPIC_API_KEY  SITE_DOMAIN (default accsysn.duckdns.org)
+#   ANTHROPIC_API_KEY  SITE_DOMAIN (default accsysn.duckdns.org)
 #
 # Never touches /opt/accsys (the accounting app). It only adds/updates the
 # shared Caddy proxy in /opt/edge and the Sentinel stack in /opt/sentinel.
@@ -37,7 +33,6 @@ stored_secret() { grep -m1 "^$1=" "$SECRETS_FILE" 2>/dev/null | cut -d= -f2- || 
 # Fernet key: urlsafe-base64 of 32 random bytes (44 chars ending in '=').
 gen_fernet() { head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '\n'; }
 gen_hex() { head -c "$1" /dev/urandom | od -An -vtx1 | tr -d ' \n'; }
-gen_password() { head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-24; }
 
 # If the database volume exists but the secrets file is gone, generating fresh
 # values would lock the app out of Postgres and make every stored credential
@@ -70,12 +65,6 @@ resolve() {
 KMS_MASTER_KEY="$(resolve KMS_MASTER_KEY pinned gen_fernet)"
 POSTGRES_PASSWORD="$(resolve POSTGRES_PASSWORD pinned gen_hex 24)"
 API_SECRET_KEY="$(resolve API_SECRET_KEY rotatable gen_hex 32)"
-GENERATED_DASHBOARD_PASSWORD=0
-if [[ -z "$(stored_secret DASHBOARD_PASSWORD)" && -z "${DASHBOARD_PASSWORD:-}" ]]; then
-  GENERATED_DASHBOARD_PASSWORD=1
-fi
-DASHBOARD_PASSWORD="$(resolve DASHBOARD_PASSWORD rotatable gen_password)"
-DASHBOARD_USER="${DASHBOARD_USER:-sentinel}"
 
 [[ "$KMS_MASTER_KEY" =~ ^[A-Za-z0-9_-]{43}=$ ]] \
   || die "KMS_MASTER_KEY is not a valid Fernet key (python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\")"
@@ -83,20 +72,12 @@ DASHBOARD_USER="${DASHBOARD_USER:-sentinel}"
 [[ "$POSTGRES_PASSWORD" =~ ^[A-Za-z0-9_-]+$ ]] \
   || die "POSTGRES_PASSWORD may only contain letters, digits, '-' and '_'"
 [[ -n "$API_SECRET_KEY" ]] || die "API_SECRET_KEY resolved empty"
-(( ${#DASHBOARD_PASSWORD} >= 12 )) || die "DASHBOARD_PASSWORD must be at least 12 characters"
-[[ "$DASHBOARD_PASSWORD" =~ ^[[:print:]]+$ ]] \
-  || die "DASHBOARD_PASSWORD must be printable characters on a single line"
-[[ "$DASHBOARD_PASSWORD" != *'"'* && "$DASHBOARD_PASSWORD" != *'\'* ]] \
-  || die "DASHBOARD_PASSWORD may not contain double quotes or backslashes"
-[[ "$DASHBOARD_USER" =~ ^[A-Za-z0-9._-]{1,64}$ ]] \
-  || die "DASHBOARD_USER may only contain letters, digits, '.', '_' and '-'"
 
 FIRST_SECRETS=0; [[ -f "$SECRETS_FILE" ]] || FIRST_SECRETS=1
 cat > "$SECRETS_FILE" <<EOF
 KMS_MASTER_KEY=${KMS_MASTER_KEY}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 API_SECRET_KEY=${API_SECRET_KEY}
-DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
 EOF
 chmod 600 "$SECRETS_FILE"
 if (( FIRST_SECRETS )); then
@@ -163,21 +144,6 @@ rm -rf /opt/sentinel/edge-stage /opt/sentinel/edge-backup
 mkdir -m 700 /opt/sentinel/edge-stage /opt/sentinel/edge-backup
 cp "$APP_DIR/edge/conf/Caddyfile" "$STAGE/Caddyfile"
 
-# bcrypt hash of the dashboard password, made by Caddy itself. The password
-# goes in on stdin, never on a command line.
-DASHBOARD_HASH="$(printf '%s\n' "$DASHBOARD_PASSWORD" \
-  | docker run --rm -i "$CADDY_IMAGE" caddy hash-password 2>/dev/null | tail -n1 | tr -d '\r')"
-[[ "$DASHBOARD_HASH" =~ ^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$ ]] \
-  || die "Could not hash the dashboard password with $CADDY_IMAGE (got: '${DASHBOARD_HASH:0:7}...')."
-cat > "$STAGE/sentinel-access.caddy" <<EOF
-# Written by /opt/sentinel/remote-deploy.sh — do not edit; set the
-# DASHBOARD_PASSWORD / DASHBOARD_USER GitHub secrets and redeploy instead.
-@sentinel_protected path /security /security/*
-basic_auth @sentinel_protected {
-	${DASHBOARD_USER} ${DASHBOARD_HASH}
-}
-EOF
-
 if ! docker run --rm -e SITE_DOMAIN="$SITE_DOMAIN" -v "$STAGE:/etc/caddy:ro" "$CADDY_IMAGE" \
      caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >"$STAGE/validate.log" 2>&1; then
   tail -n 20 "$STAGE/validate.log" >&2
@@ -186,7 +152,8 @@ fi
 
 cp -a "$EDGE_DIR/conf/." "$BACKUP/" 2>/dev/null || true
 install -m 644 "$STAGE/Caddyfile" "$EDGE_DIR/conf/Caddyfile"
-install -m 600 "$STAGE/sentinel-access.caddy" "$EDGE_DIR/conf/sentinel-access.caddy"
+# Left over from the short-lived dashboard password (no longer imported).
+rm -f /opt/edge/conf/sentinel-access.caddy
 
 reload_caddy() {
   "${EDGE[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
@@ -223,27 +190,12 @@ curl -fsS --retry 10 --retry-delay 3 --retry-all-errors http://127.0.0.1:8100/he
 curl -fsS --retry 10 --retry-delay 3 --retry-all-errors -o /dev/null http://127.0.0.1:3100/security \
   || die "Web not healthy on 127.0.0.1:3100"
 # Through Caddy. TLS may still be provisioning on the very first deploy, so
-# "unreachable" is a warning, not a failure — but reachable WITHOUT a password
-# is a hard failure.
-anon_code="$(curl -s -o /dev/null -w '%{http_code}' --retry 10 --retry-delay 3 \
-  "https://${SITE_DOMAIN}/security" || true)"
-if [[ "$anon_code" == "401" ]]; then
-  log "Dashboard asks for a password (401 without credentials)."
-elif [[ "$anon_code" =~ ^[23] ]]; then
-  die "https://${SITE_DOMAIN}/security answered $anon_code WITHOUT a password: the lock-down is not active."
+# this is a warning, not a failure.
+if curl -fsS --retry 10 --retry-delay 3 --retry-all-errors -o /dev/null \
+     "https://${SITE_DOMAIN}/security/api/healthz"; then
+  log "Live: https://${SITE_DOMAIN}/security"
 else
-  echo "WARNING: https://${SITE_DOMAIN}/security not reachable yet (HTTP $anon_code; first-time certificate issuance can take a minute; check: docker logs edge-caddy-1)." >&2
-fi
-# Credentials go to curl on stdin (-K -), not on its command line.
-if printf 'user = "%s:%s"\n' "$DASHBOARD_USER" "$DASHBOARD_PASSWORD" \
-     | curl -K - -fsS --retry 10 --retry-delay 3 --retry-all-errors -o /dev/null \
-       "https://${SITE_DOMAIN}/security/api/healthz"; then
-  log "Live: https://${SITE_DOMAIN}/security (user: ${DASHBOARD_USER})"
-else
-  echo "WARNING: https://${SITE_DOMAIN}/security/api/healthz not reachable with the dashboard password yet." >&2
-fi
-if (( GENERATED_DASHBOARD_PASSWORD )); then
-  echo "NOTICE: generated a dashboard password. Read it on the server with: grep DASHBOARD_PASSWORD $SECRETS_FILE  (or set the DASHBOARD_PASSWORD GitHub secret to choose your own, then redeploy)." >&2
+  echo "WARNING: https://${SITE_DOMAIN}/security/api/healthz not reachable yet (first-time certificate issuance can take a minute; check: docker logs edge-caddy-1)." >&2
 fi
 
 docker image prune -f >/dev/null

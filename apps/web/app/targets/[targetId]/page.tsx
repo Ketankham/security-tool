@@ -58,7 +58,10 @@ function TargetDetail({ targetId }: { targetId: string }) {
           <h1>{target.display_name}</h1>
           <p className="card-muted mono">{target.root_domain}</p>
 
-          <OwnershipCard target={target} onChange={refresh} />
+          {/* Hidden when this deployment doesn't require ownership checks. */}
+          {target.ownership_check_required && (
+            <OwnershipCard target={target} onChange={refresh} />
+          )}
           <ScopeCard targetId={targetId} />
           <PersonasCard targetId={targetId} rootDomain={target.root_domain} />
           <ScansCard target={target} />

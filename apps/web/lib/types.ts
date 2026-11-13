@@ -3,6 +3,14 @@
 
 export type OrgRole = "owner" | "admin" | "member" | "viewer";
 
+export interface OrganizationSummary {
+  id: string;
+  name: string;
+  slug: string;
+  target_count: number;
+  target_domains: string[];
+}
+
 export interface Organization {
   id: string;
   name: string;

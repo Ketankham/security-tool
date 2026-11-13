@@ -25,8 +25,8 @@ function Dashboard() {
     <>
       <h1 style={{ marginTop: 24 }}>Targets</h1>
       <p className="card-muted">
-        Each target is a web application you are authorized to test. Add one,
-        verify ownership, define personas, then run scans.
+        Each target is a web application you are testing. Add one, set up its
+        logins (personas), then run scans.
       </p>
 
       {error && <div className="error-box">{error}</div>}
@@ -47,7 +47,7 @@ function Dashboard() {
                 <div className="title">{t.display_name}</div>
                 <div className="sub mono">{t.root_domain}</div>
               </div>
-              {t.is_scannable ? (
+              {!t.ownership_check_required ? null : t.is_scannable ? (
                 <span className="badge tone-ok">Scannable</span>
               ) : t.ownership_verified ? (
                 <span className="badge tone-running">Needs authorization</span>

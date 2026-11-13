@@ -8,6 +8,7 @@ import type {
   Finding,
   LoginTestResult,
   Organization,
+  OrganizationSummary,
   OwnershipChallenge,
   OwnershipMethod,
   OwnershipVerifyResult,
@@ -126,6 +127,8 @@ export const api = {
   createOrg: (name: string, slug: string) =>
     request<Organization>("/organizations", { method: "POST", body: { name, slug }, org: false }),
   me: () => request<Organization>("/organizations/me"),
+  // Every organization, for the organization browser (no org header).
+  listOrgs: () => request<OrganizationSummary[]>("/organizations", { org: false }),
 
   // Targets.
   listTargets: () => request<Target[]>("/targets"),
