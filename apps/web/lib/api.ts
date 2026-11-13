@@ -14,6 +14,8 @@ import type {
   OwnershipVerifyResult,
   Persona,
   Scan,
+  ScanDepth,
+  ScanSpeed,
   ScopeRule,
   Target,
 } from "./types";
@@ -129,10 +131,15 @@ export const api = {
   me: () => request<Organization>("/organizations/me"),
   // Every organization, for the organization browser (no org header).
   listOrgs: () => request<OrganizationSummary[]>("/organizations", { org: false }),
+  deleteOrg: (id: string) =>
+    request<void>(`/organizations/${id}`, { method: "DELETE", org: false }),
 
   // Targets.
   listTargets: () => request<Target[]>("/targets"),
   getTarget: (id: string) => request<Target>(`/targets/${id}`),
+  updateTarget: (id: string, body: { root_domain?: string; display_name?: string }) =>
+    request<Target>(`/targets/${id}`, { method: "PATCH", body }),
+  deleteTarget: (id: string) => request<void>(`/targets/${id}`, { method: "DELETE" }),
   createTarget: (body: { root_domain: string; display_name: string; is_production: boolean }) =>
     request<Target>("/targets", { method: "POST", body }),
   ownershipChallenge: (targetId: string, method: OwnershipMethod) =>
@@ -168,6 +175,8 @@ export const api = {
   // Set or replace an existing persona's login recipe and/or password.
   updatePersonaLogin: (targetId: string, personaId: string, body: unknown) =>
     request<Persona>(`/targets/${targetId}/personas/${personaId}`, { method: "PATCH", body }),
+  deletePersona: (targetId: string, personaId: string) =>
+    request<void>(`/targets/${targetId}/personas/${personaId}`, { method: "DELETE" }),
   // Test login (v1 #1): the worker replays the saved login; poll for the result.
   startLoginTest: (targetId: string, personaId: string) =>
     request<{ test_id: string }>(`/targets/${targetId}/personas/${personaId}/test-login`, {
@@ -181,10 +190,14 @@ export const api = {
   // Scans.
   listScans: (targetId: string) => request<Scan[]>(`/targets/${targetId}/scans`),
   getScan: (scanId: string) => request<Scan>(`/scans/${scanId}`),
-  createScan: (targetId: string, triggeredBy = "manual") =>
+  createScan: (
+    targetId: string,
+    options: { speed?: ScanSpeed; depth?: ScanDepth } = {},
+    triggeredBy = "manual",
+  ) =>
     request<Scan>(`/targets/${targetId}/scans`, {
       method: "POST",
-      body: { triggered_by: triggeredBy },
+      body: { triggered_by: triggeredBy, ...options },
     }),
   retryScan: (scanId: string) => request<Scan>(`/scans/${scanId}/retry`, { method: "POST" }),
 

@@ -94,3 +94,73 @@ async def test_crawl_endpoints_tagged_with_persona_id(mini_app_server, browser):
 
     assert surface.persona_id == "admin-1"
     assert all(e.persona_id == "admin-1" for e in surface.endpoints)
+
+
+async def test_crawl_follows_the_site_after_an_apex_to_www_redirect():
+    """QA #37: target "abhyaasika.com", app on www.abhyaasika.com. The apex
+    redirects to www; every link on the real site is on www. The crawl used
+    to treat those as foreign and stop after one page."""
+    import asyncio
+
+    import uvicorn
+    from playwright.async_api import async_playwright
+    from starlette.applications import Starlette
+    from starlette.responses import HTMLResponse, RedirectResponse
+    from starlette.routing import Route
+
+    from .conftest import _chromium_launch_kwargs, _free_port
+
+    port = _free_port()
+
+    async def any_page(request):
+        if request.url.hostname == "abhyaasika.test":
+            return RedirectResponse(f"http://www.abhyaasika.test:{port}{request.url.path}")
+        links = "".join(f'<a href="/p{i}">p{i}</a>' for i in range(1, 4))
+        return HTMLResponse(f"<html><body><h1>{request.url.path}</h1>{links}</body></html>")
+
+    app = Starlette(routes=[Route("/{path:path}", any_page)])
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    task = asyncio.create_task(server.serve())
+    while not server.started:
+        await asyncio.sleep(0.01)
+    try:
+        async with async_playwright() as p:
+            kwargs = _chromium_launch_kwargs()
+            kwargs["args"] = [
+                "--host-resolver-rules=MAP abhyaasika.test 127.0.0.1, "
+                "MAP www.abhyaasika.test 127.0.0.1"
+            ]
+            browser = await p.chromium.launch(**kwargs)
+            crawler = PersonaCrawler(
+                scope_guard=ScopeGuard(
+                    allowed_hosts={"abhyaasika.test", "*.abhyaasika.test"},
+                    target_ownership_verified=True,
+                ),
+                rate_limiter=RateLimiter(FakeRedis(), default_rate_per_sec=1000, burst=1000),
+                target_id="t",
+            )
+            surface = await crawler.crawl(
+                browser, root_url=f"http://abhyaasika.test:{port}/", persona_id="anonymous"
+            )
+            await browser.close()
+    finally:
+        server.should_exit = True
+        await task
+
+    paths = {e.path_template for e in surface.endpoints}
+    assert {"/p1", "/p2", "/p3"} <= paths, paths
+    assert surface.pages_visited >= 4
+
+
+async def test_one_dead_page_does_not_sink_the_rest_of_the_crawl(mini_app_server, browser):
+    """Found in the QA round 3 run: after a page failed to load, the tab sat
+    on a settling error page and every later goto was "interrupted by
+    another navigation", so the crawl visited nothing."""
+    from .conftest import _free_port
+
+    dead_root = f"http://127.0.0.1:{_free_port()}/"  # nothing listens here
+    surface = await _crawler(mini_app_server).crawl(
+        browser, root_url=dead_root, persona_id="anonymous", seeds=[f"{mini_app_server}/"]
+    )
+    assert any("Failed to load" in n for n in surface.notes)
+    assert surface.pages_visited >= 2, surface.notes

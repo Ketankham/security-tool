@@ -39,11 +39,18 @@ async def create_scan(
             "accepted first (see docs/06-safety-legal-abuse.md §1).",
         )
 
-    return await _start_scan(session, target, triggered_by=payload.triggered_by)
+    return await _start_scan(
+        session,
+        target,
+        triggered_by=payload.triggered_by,
+        options={"speed": payload.speed, "depth": payload.depth},
+    )
 
 
-async def _start_scan(session: AsyncSession, target: Target, *, triggered_by: str) -> Scan:
-    scan = Scan(target_id=target.id, triggered_by=triggered_by)
+async def _start_scan(
+    session: AsyncSession, target: Target, *, triggered_by: str, options: dict
+) -> Scan:
+    scan = Scan(target_id=target.id, triggered_by=triggered_by, options=options)
     session.add(scan)
     await session.commit()
 
@@ -88,7 +95,8 @@ async def retry_scan(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "Target is not scannable yet — verify ownership first."
         )
-    return await _start_scan(session, target, triggered_by="retry")
+    # Same speed / depth as the scan being retried.
+    return await _start_scan(session, target, triggered_by="retry", options=dict(old.options or {}))
 
 
 @router.get("/targets/{target_id}/scans", response_model=list[ScanOut])

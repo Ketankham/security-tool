@@ -21,7 +21,7 @@ from sentinel_auth import (
 )
 from sentinel_core.crypto import EnvelopeCrypto
 from sentinel_core.http_engine import HttpEngine
-from sentinel_core.login_safety import login_navigation_problems
+from sentinel_core.login_safety import host_is_on_target, login_navigation_problems
 from sentinel_db.models import Persona
 
 
@@ -149,18 +149,30 @@ async def establish_persona(
         # is still available for crawling — it's authz-confidence, not session
         # validity, that's capped (docs/04-edge-cases.md §B3). Don't conflate
         # the two into one boolean.
-        try:
-            oracle_result = await establish_session_oracle(
-                engine, session, probe_url=oracle_probe_url
-            )
+        # Probe the page the login landed on first (QA #37): a dashboard
+        # answers differently to logged-in and logged-out visitors, while
+        # the site's home page usually doesn't. The root URL is the fallback.
+        candidates = [
+            u
+            for u in (replay_result.final_url, oracle_probe_url)
+            if u
+            and urlsplit(u).scheme in ("http", "https")
+            and host_is_on_target(urlsplit(u).hostname or "", target_root_domain)
+        ]
+        for probe in dict.fromkeys(candidates or [oracle_probe_url]):
+            try:
+                oracle_result = await establish_session_oracle(engine, session, probe_url=probe)
+            except Exception as exc:  # noqa: BLE001 — an unreachable probe must not end the scan
+                why = str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__
+                oracle_detail = (
+                    f"Logged in, but couldn't check whether the session stays alive "
+                    f"({probe} failed: {why}). "
+                    "Access-control results for this persona are less certain."
+                )
+                continue
             oracle, oracle_detail = oracle_result.oracle, oracle_result.detail
-        except Exception as exc:  # noqa: BLE001 — an unreachable probe URL must not end the scan
-            why = str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__
-            oracle_detail = (
-                f"Logged in, but couldn't check whether the session stays alive "
-                f"({oracle_probe_url} failed: {why}). "
-                "Access-control results for this persona are less certain."
-            )
+            if oracle is not None:
+                break
 
     return PersonaAuthResult(
         available=True,

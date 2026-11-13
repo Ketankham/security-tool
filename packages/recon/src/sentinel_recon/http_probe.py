@@ -16,7 +16,10 @@ import httpx as httpx_client
 from .models import HttpProbeResult
 from .tooling import looks_like_projectdiscovery_tool, run_tool
 
-BINARY = "httpx"
+# The worker image installs ProjectDiscovery's httpx as `pd-httpx`: the
+# venv's Python `httpx` console script owns the plain name on PATH.
+BINARY_CANDIDATES = ("pd-httpx", "httpx")
+BINARY = BINARY_CANDIDATES[0]
 _TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 
 
@@ -26,13 +29,23 @@ async def is_available() -> bool:
     would otherwise shadow ProjectDiscovery's Go binary — see
     tooling.looks_like_projectdiscovery_tool for why that distinction is
     load-bearing here, not pedantic."""
-    return await looks_like_projectdiscovery_tool(BINARY)
+    return await _binary() is not None
+
+
+async def _binary() -> str | None:
+    for name in BINARY_CANDIDATES:
+        if await looks_like_projectdiscovery_tool(name):
+            return name
+    return None
 
 
 async def probe_via_binary(hosts: list[str], *, timeout_s: float = 60.0) -> list[HttpProbeResult]:
+    binary = await _binary()
+    if binary is None:
+        return []
     stdin = "\n".join(hosts)
     result = await run_tool(
-        BINARY,
+        binary,
         ["-silent", "-json", "-title", "-server", "-tech-detect"],
         stdin=stdin,
         timeout_s=timeout_s,

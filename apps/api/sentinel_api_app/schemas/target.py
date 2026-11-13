@@ -25,6 +25,21 @@ class TargetCreate(BaseModel):
         return normalize_root_domain(v)
 
 
+class TargetUpdate(BaseModel):
+    """Rename a target or point it at another domain (QA #37: a target saved
+    as abhyaasika.com whose app lives on www.abhyaasika.com)."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    root_domain: str | None = Field(default=None, min_length=1, max_length=2048)
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @field_validator("root_domain")
+    @classmethod
+    def _normalize(cls, v: str | None) -> str | None:
+        return normalize_root_domain(v) if v is not None else None
+
+
 class TargetOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
