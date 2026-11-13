@@ -202,3 +202,18 @@ async def test_malformed_scan_id_is_a_422_not_a_500(client, path):
     headers = await _org(client, f"badid-{uuid.uuid4().hex[:8]}")
     resp = await client.get(path, headers=headers)
     assert resp.status_code == 422
+
+
+# Organization browser: every org, with its targets, no X-Org-Id needed.
+
+
+async def test_organizations_can_be_browsed(client):
+    a = await _org(client, "browse-a")
+    b = await _org(client, "browse-b")
+    await _target(client, a, domain="abhyaasika.test")
+    resp = await client.get("/organizations")
+    assert resp.status_code == 200
+    by_id = {o["id"]: o for o in resp.json()}
+    assert by_id[a["X-Org-Id"]]["target_count"] == 1
+    assert by_id[a["X-Org-Id"]]["target_domains"] == ["abhyaasika.test"]
+    assert by_id[b["X-Org-Id"]]["target_count"] == 0

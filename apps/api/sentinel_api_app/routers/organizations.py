@@ -7,12 +7,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 from sentinel_core.crypto import EnvelopeCrypto
 from sentinel_db import get_session
-from sentinel_db.models import Organization
+from sentinel_db.models import Organization, Target
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..deps import get_crypto, get_current_org
-from ..schemas.organization import OrganizationCreate, OrganizationOut
+from ..schemas.organization import OrganizationCreate, OrganizationOut, OrganizationSummary
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
@@ -40,6 +40,30 @@ async def create_organization(
     await session.commit()
     await session.refresh(org)
     return org
+
+
+@router.get("", response_model=list[OrganizationSummary])
+async def list_organizations(
+    session: AsyncSession = Depends(get_session),
+) -> list[OrganizationSummary]:
+    """Every organization, for the dashboard's organization browser. This
+    deployment is an internal tool used by one small team, so anyone who can
+    open it may browse all organizations (there are no user accounts)."""
+    orgs = (await session.execute(select(Organization).order_by(Organization.name))).scalars()
+    targets = (await session.execute(select(Target.organization_id, Target.root_domain))).all()
+    domains: dict = {}
+    for org_id, domain in targets:
+        domains.setdefault(org_id, []).append(domain)
+    return [
+        OrganizationSummary(
+            id=o.id,
+            name=o.name,
+            slug=o.slug,
+            target_count=len(domains.get(o.id, [])),
+            target_domains=sorted(domains.get(o.id, []))[:5],
+        )
+        for o in orgs
+    ]
 
 
 @router.get("/me", response_model=OrganizationOut)

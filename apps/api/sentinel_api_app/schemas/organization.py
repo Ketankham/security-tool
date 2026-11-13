@@ -20,3 +20,13 @@ class OrganizationOut(BaseModel):
     name: str
     slug: str
     plan: str
+
+
+class OrganizationSummary(BaseModel):
+    """One row of the organization browser."""
+
+    id: UUID
+    name: str
+    slug: str
+    target_count: int
+    target_domains: list[str]

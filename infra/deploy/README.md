@@ -49,12 +49,10 @@ deploys.
    - writes `/opt/sentinel/.env` from the secrets,
    - loads the images, starts postgres + redis, runs `alembic upgrade head`,
    - starts api / worker / worker-logins / web and waits for their health checks,
-   - hashes the dashboard password, validates the new Caddy config with
-     `caddy validate`, and only then installs/reloads it in `/opt/edge`
-     (restoring the previous config if the reload is rejected),
-   - smoke-checks `/healthz` locally, checks that `https://<domain>/security`
-     answers **401 without a password** (the deploy fails if it doesn't), and
-     checks `https://<domain>/security/api/healthz` with the password.
+   - validates the new Caddy config with `caddy validate`, and only then
+     installs/reloads it in `/opt/edge` (restoring the previous config if the
+     reload is rejected),
+   - smoke-checks `/healthz` locally and through `https://<domain>/security/api/healthz`.
 
 ## One-time setup
 
@@ -78,26 +76,6 @@ first deploy:
 ```bash
 scp root@accsysn.duckdns.org:/opt/sentinel/.secrets ./sentinel-secrets.backup
 ```
-
-### Dashboard password
-
-Everything under `https://<domain>/security` (dashboard and API) asks for a
-username and password (HTTP basic auth in Caddy). The username is `sentinel`
-(or the `DASHBOARD_USER` secret). The password is either:
-
-- **your choice:** set the `DASHBOARD_PASSWORD` GitHub secret (at least 12
-  characters, no `"` or `\`) and redeploy. Change the secret and redeploy to
-  rotate it; or
-- **generated** on the first deploy and kept in `/opt/sentinel/.secrets`:
-
-  ```bash
-  ssh root@accsysn.duckdns.org grep DASHBOARD_PASSWORD /opt/sentinel/.secrets
-  ```
-
-Only the bcrypt hash reaches Caddy (`/opt/edge/conf/sentinel-access.caddy`).
-The Caddyfile imports that file by exact path, so if it's ever missing Caddy
-refuses the config rather than serving the dashboard unprotected. The
-accounting app on `:8000` is not affected.
 
 Optional secrets: `ANTHROPIC_API_KEY` (LLM-assisted phases), and
 `KMS_MASTER_KEY` / `POSTGRES_PASSWORD` / `API_SECRET_KEY` only if you want to
@@ -161,13 +139,12 @@ Hetzner Cloud firewall (in the Hetzner console) is in use, allow 443 there too.
 
 ## Public exposure: read before relying on it
 
-`/security` is behind the dashboard password (above), so strangers can't
-reach the UI or API. Behind it, the API still uses the **dev auth stand-in**
-(`X-Org-Id` header, `apps/api/sentinel_api_app/deps.py`): everyone who has the
-password can open every organization whose id they know. Fine for one internal
-team; before giving clients their own access:
+There is **no password** on `/security`: this is an internal tool for one
+small team, and anyone with the URL can open it and browse every
+organization. Ownership verification is off too. Before anyone outside the
+team gets the URL:
 
-- wire real user accounts (Clerk),
+- add a password (`basic_auth` in the Caddyfile) or real user accounts (Clerk),
 - add private and link-local IP blocking to the scope guard, so the worker can't
   be pointed at the server's own internal services,
 - keep in mind that Hetzner acts quickly on scanning abuse reports: only scan
