@@ -64,6 +64,9 @@ jobs:
       - name: Licence check (blocks GPL/AGPL — see ADR-0002)
         run: uv run python infra/scripts/licence_check.py
 
+      - name: Tools manifest check (worker binaries pinned + permitted licences — ADR-0002)
+        run: uv run python infra/scripts/tools_manifest_check.py
+
       - name: Ruff lint
         run: uv run ruff check apps packages
 

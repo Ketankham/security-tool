@@ -35,6 +35,13 @@ class Asset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     ip_addresses: Mapped[list[str]] = mapped_column(JSONB, default=list)
     http_probes: Mapped[list[dict]] = mapped_column(JSONB, default=list)
     discovery_source: Mapped[str] = mapped_column(String(30), default="root_domain")
+    # Every data source that reported this host (subfinder -cs), e.g.
+    # ["crtsh", "alienvault"]; ["root_domain"] for the target itself.
+    sources: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    # Whether recon probed it, and if not why: in_scope | excluded |
+    # private_ip | unresolved | capped (sentinel_recon.models).
+    scope_status: Mapped[str] = mapped_column(String(30), default="in_scope")
+    scope_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     endpoints: Mapped[list[Endpoint]] = relationship(
         back_populates="asset", cascade="all, delete-orphan"

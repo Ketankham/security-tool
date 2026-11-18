@@ -10,6 +10,7 @@ import { isTerminal, scanStatus } from "@/lib/scan";
 import { ActivityLog } from "@/components/ActivityLog";
 import { CoverageCard } from "@/components/CoverageCard";
 import { EndpointsTable } from "@/components/EndpointsTable";
+import { ReconPanel } from "@/components/ReconPanel";
 import { PhaseBoard } from "@/components/PhaseBoard";
 import { FindingsList, SeverityBar } from "@/components/FindingsList";
 import type { Finding, Scan } from "@/lib/types";
@@ -122,6 +123,7 @@ function ScanDetail({ scanId }: { scanId: string }) {
           </div>
 
           <ActivityLog scanId={scan.id} running={!terminal} />
+          <ReconPanel scanId={scan.id} running={!terminal} />
           {(scan.state === "complete" || scan.state === "failed") && (
             <EndpointsTable scanId={scan.id} targetId={scan.target_id} />
           )}

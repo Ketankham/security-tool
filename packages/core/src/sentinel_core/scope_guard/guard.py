@@ -24,6 +24,12 @@ def _host_matches(host: str, pattern: str) -> bool:
     return host == pattern
 
 
+def _host_matches_rule(host: str, rule: ScopeRule) -> bool:
+    """A host rule "*.acme.com" covers its subdomains; "acme.com" covers only
+    itself. Same matching as the verified-host list."""
+    return _host_matches(host, rule.pattern)
+
+
 class ScopeGuard:
     def __init__(
         self,
@@ -71,6 +77,24 @@ class ScopeGuard:
             return ScopeDecision(
                 ScopeVerdict.BLOCKED_HOST,
                 f"Host '{host}' is not in the verified scope for this target.",
+            )
+
+        # Host rules narrow the verified hosts above; they never widen them.
+        # (They used to be accepted by the API and then ignored here, so an
+        # "exclude admin.acme.com" rule silently did nothing.)
+        for rule in self.rules:
+            if rule.kind == "host" and rule.effect == "exclude" and _host_matches_rule(host, rule):
+                return ScopeDecision(
+                    ScopeVerdict.BLOCKED_HOST,
+                    f"Host '{host}' matches exclude rule '{rule.label or rule.pattern}'.",
+                    rule,
+                )
+        host_includes = [r for r in self.rules if r.kind == "host" and r.effect == "include"]
+        if host_includes and not any(_host_matches_rule(host, r) for r in host_includes):
+            return ScopeDecision(
+                ScopeVerdict.BLOCKED_HOST,
+                f"Host '{host}' does not match any host include rule, and host include "
+                "rules are present (allow-listing mode).",
             )
 
         path_excludes = [

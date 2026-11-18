@@ -8,6 +8,8 @@ import { scanStatus } from "@/lib/scan";
 import { CoverageCard } from "@/components/CoverageCard";
 import { FindingsList, SeverityBar } from "@/components/FindingsList";
 import type { Finding, Persona, Scan, ScanEndpoint, Target } from "@/lib/types";
+import type { ScanAsset, ToolRun } from "@/lib/types";
+import { hostStatus, techSummary } from "@/components/ReconPanel";
 
 // Step 1C: the scan's report on one printable page (Print / Save as PDF) and
 // as a JSON file. Built from the same data the scan page shows, so it can't
@@ -29,7 +31,8 @@ interface Data {
   findings: Finding[];
   endpoints: ScanEndpoint[];
   personas: Persona[];
-  assets: { host: string; ip_addresses: string[]; tech_fingerprint: string[] }[];
+  assets: ScanAsset[];
+  toolRuns: ToolRun[];
 }
 
 function Report({ scanId }: { scanId: string }) {
@@ -41,17 +44,16 @@ function Report({ scanId }: { scanId: string }) {
     (async () => {
       try {
         const scan = await api.getScan(scanId);
-        const [target, findings, endpoints, personas, stored] = await Promise.all([
+        const [target, findings, endpoints, personas, assets, toolRuns] = await Promise.all([
           api.getTarget(scan.target_id),
           api.listFindings(scanId),
           api.listScanEndpoints(scanId),
           api.listPersonas(scan.target_id),
-          api.getScanReport(scanId).catch(() => null), // only the host list comes from it
+          api.listScanAssets(scanId),
+          api.listToolRuns(scanId),
         ]);
-        const assets = Array.isArray(stored?.assets)
-          ? (stored.assets as Data["assets"])
-          : [];
-        if (!cancelled) setData({ scan, target, findings, endpoints, personas, assets });
+        if (!cancelled)
+          setData({ scan, target, findings, endpoints, personas, assets, toolRuns });
       } catch (e) {
         if (!cancelled) setError(e instanceof ApiError ? e.detail : String(e));
       }
@@ -77,7 +79,8 @@ function Report({ scanId }: { scanId: string }) {
     );
   if (!data) return <div className="notice">Loading report…</div>;
 
-  const { scan, target, findings, endpoints, assets } = data;
+  const { scan, target, findings, endpoints, assets, toolRuns } = data;
+  const technologies = techSummary(assets);
   const status = scanStatus(scan);
   const confirmed = findings.filter((f) => f.confidence === "confirmed").length;
 
@@ -104,7 +107,27 @@ function Report({ scanId }: { scanId: string }) {
       },
       findings,
       endpoints: endpoints.map((e) => ({ ...e, reached_by: e.persona_ids.map(label) })),
-      hosts: assets,
+      hosts: assets.map((a) => ({
+        host: a.host,
+        status: hostStatus(a).label,
+        reason: a.scope_reason,
+        found_by: a.sources,
+        ip_addresses: a.ip_addresses,
+        http: a.http_probes.map((p) => ({ url: p.url, status_code: p.status_code, title: p.title })),
+        technology: a.tech,
+      })),
+      technologies,
+      tool_runs: toolRuns.map((r) => ({
+        tool: r.tool,
+        version: r.version,
+        status: r.status,
+        command: r.command,
+        skip_reason: r.skip_reason,
+        started_at: r.started_at,
+        duration_ms: r.duration_ms,
+        exit_code: r.exit_code,
+        results: r.results_count,
+      })),
     };
     saveBlob(
       new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }),
@@ -191,16 +214,69 @@ function Report({ scanId }: { scanId: string }) {
 
       {assets.length > 0 && (
         <div className="card" style={{ marginTop: 16 }}>
-          <h2>Hosts</h2>
-          <ul style={{ margin: 0, paddingLeft: 18 }}>
-            {assets.map((a) => (
-              <li key={a.host}>
-                <span className="mono">{a.host}</span>
-                {a.ip_addresses.length > 0 && ` — ${a.ip_addresses.join(", ")}`}
-                {a.tech_fingerprint.length > 0 && ` — ${a.tech_fingerprint.join(", ")}`}
-              </li>
-            ))}
-          </ul>
+          <h2>Hosts ({assets.length})</h2>
+          <table className="report-table">
+            <thead>
+              <tr>
+                <th>Host</th>
+                <th>Status</th>
+                <th>HTTP</th>
+                <th>Found by</th>
+                <th>Technology</th>
+              </tr>
+            </thead>
+            <tbody>
+              {assets.map((a) => (
+                <tr key={a.host}>
+                  <td className="mono">
+                    {a.host}
+                    {a.ip_addresses.length > 0 && <div className="hint">{a.ip_addresses.join(", ")}</div>}
+                  </td>
+                  <td>
+                    {hostStatus(a).label}
+                    {a.scope_reason && <div className="hint">{a.scope_reason}</div>}
+                  </td>
+                  <td>
+                    {a.http_probes
+                      .filter((p) => p.status_code !== null)
+                      .slice(0, 2)
+                      .map((p, i) => (
+                        <div key={i}>
+                          {p.status_code} {p.title ? `“${p.title}”` : ""}
+                        </div>
+                      ))}
+                  </td>
+                  <td>{(a.sources.length ? a.sources : [a.discovery_source]).join(", ")}</td>
+                  <td>{a.tech.join(", ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {technologies.length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <h2>Technologies</h2>
+          <table className="report-table">
+            <thead>
+              <tr>
+                <th>Technology</th>
+                <th>Version(s)</th>
+                <th>Seen on</th>
+              </tr>
+            </thead>
+            <tbody>
+              {technologies.map((t) => (
+                <tr key={t.name}>
+                  <td>{t.name}</td>
+                  <td className="mono">{t.versions.join(", ") || "—"}</td>
+                  <td className="mono">{t.hosts.join(", ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="hint">Versions are read from responses: leads to confirm, not proof.</p>
         </div>
       )}
 
@@ -212,6 +288,39 @@ function Report({ scanId }: { scanId: string }) {
               <li key={i}>{r}</li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {toolRuns.length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <h2>Appendix: commands run</h2>
+          <table className="report-table">
+            <thead>
+              <tr>
+                <th>Tool</th>
+                <th>Result</th>
+                <th>Command</th>
+              </tr>
+            </thead>
+            <tbody>
+              {toolRuns.map((r) => (
+                <tr key={r.id}>
+                  <td>
+                    {r.tool} {r.version && <span className="mono">{r.version}</span>}
+                  </td>
+                  <td>
+                    {r.status.replace("_", " ")}
+                    <div className="hint">
+                      {r.skip_reason ??
+                        `${r.results_count} result(s)${r.duration_ms !== null ? `, ${(r.duration_ms / 1000).toFixed(1)} s` : ""}`}
+                    </div>
+                  </td>
+                  <td className="mono" style={{ wordBreak: "break-all" }}>{r.command || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="hint">Full tool output is on the scan page (Tool runs → Download).</p>
         </div>
       )}
     </>

@@ -97,3 +97,17 @@ async def test_http_probe_prefers_the_pd_httpx_name():
         http_probe, "looks_like_projectdiscovery_tool", AsyncMock(return_value=False)
     ):
         assert await http_probe.is_available() is False
+
+
+async def test_run_tool_keeps_output_printed_before_a_timeout():
+    result = await run_tool("sh", ["-c", "echo partial; sleep 5"], timeout_s=0.5)
+    assert result.timed_out is True
+    assert result.returncode is None
+    assert "partial" in result.stdout
+    assert result.started_at is not None and result.finished_at is not None
+
+
+async def test_run_tool_records_command_and_passes_stdin():
+    result = await run_tool("cat", [], stdin="a.test\nb.test")
+    assert result.stdout == "a.test\nb.test"
+    assert result.command == "cat"

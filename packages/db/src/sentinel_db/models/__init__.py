@@ -10,6 +10,7 @@ from .report import Report
 from .scan import Scan, ScanPhase, ScanPolicy
 from .scan_event import ScanEvent
 from .target import ScopeRule, Target
+from .tool_run import ToolRunRecord
 from .transcript import TranscriptRecord
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "Scan",
     "ScanPhase",
     "ScanEvent",
+    "ToolRunRecord",
     "Asset",
     "Endpoint",
     "Parameter",

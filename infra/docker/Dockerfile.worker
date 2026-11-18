@@ -8,7 +8,9 @@
 # Go's public checksum database, so a tampered download fails the build.
 # Static (CGO off), so they run on the Debian-based runtime image below.
 #
-# Versions are pinned; bump them deliberately. tlsx needs Go >= 1.27.
+# Versions are pinned; bump them deliberately, together with
+# infra/tools-manifest.json (CI's tools_manifest_check.py fails on drift or a
+# non-permitted licence). tlsx needs Go >= 1.27.
 #   subfinder v2.17.0 (2026-10-08) — passive subdomain enumeration
 #   tlsx      v1.4.4  (2026-10-26) — TLS / cipher grading
 #   httpx     v1.6.10            — HTTP probing + tech detection. Installed as

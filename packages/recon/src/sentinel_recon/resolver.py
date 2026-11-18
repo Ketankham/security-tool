@@ -6,6 +6,7 @@ extends to the tools themselves, not just the crawler).
 
 from __future__ import annotations
 
+import ipaddress
 import secrets
 
 import dns.asyncresolver
@@ -30,3 +31,18 @@ async def detect_wildcard_dns(root_domain: str) -> bool:
     probe_host = f"sentinel-wildcard-probe-{secrets.token_hex(8)}.{root_domain}"
     ips = await resolve_a(probe_host)
     return len(ips) > 0
+
+
+def non_public_ips(ips: list[str]) -> list[str]:
+    """Addresses a scanner must not be pointed at from the internet side:
+    private, loopback, link-local (cloud metadata), CGNAT, reserved...
+    A discovered "internal.acme.com -> 10.0.0.5" would otherwise have the
+    worker probe its own hosting network."""
+    bad = []
+    for ip in ips:
+        try:
+            if not ipaddress.ip_address(ip).is_global:
+                bad.append(ip)
+        except ValueError:
+            bad.append(ip)
+    return bad

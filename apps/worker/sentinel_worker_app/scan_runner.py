@@ -49,7 +49,6 @@ from sentinel_core.state_machine import (
 from sentinel_crawler import PersonaCrawler, SurfaceMap
 from sentinel_db import open_session
 from sentinel_db.models import (
-    Asset,
     Finding,
     Organization,
     Persona,
@@ -64,6 +63,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from . import recon_adapter
 from .access_control_adapter import AccessControlStats, run_access_control_and_verify
 from .auth_adapter import establish_persona
 from .config import Settings, get_settings
@@ -323,6 +323,7 @@ async def _run_crawling(
     landing_pages: dict[str, str] | None = None,
     options: dict | None = None,
     scan_log: ScanLog | NullScanLog = NULL_LOG,
+    extra_seeds: list[str] | None = None,
 ) -> list[SurfaceMap]:
     """``root_url`` defaults to the target's own root URL; tests pass an
     explicit one — see _run_auth_establishing's docstring for why."""
@@ -375,7 +376,15 @@ async def _run_crawling(
     anon_seeds = [
         *(p.login_recipe.get("start_url") for p in configured_personas if p.login_recipe),
         *landing_pages.values(),
+        *(extra_seeds or []),
     ]
+    if extra_seeds:
+        scan_log.add(
+            "crawl",
+            f"Also starting from {len(extra_seeds)} live subdomain(s) found by recon: "
+            f"{', '.join(extra_seeds)} (they share the page budget).",
+            persona="Logged-out visitor",
+        )
     scan_log.add(
         "crawl",
         f"Crawling {effective_root_url} (speed {requests_per_second:g} req/s, up to {max_pages} "
@@ -612,40 +621,34 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
         await _start_phase(session, phase)
         await session.commit()
 
-        recon_result = await run_recon(target.root_domain)
-        for asset in recon_result.assets:
-            probes = ", ".join(
-                f"{p.url} -> {p.status_code if p.status_code is not None else p.error}"
-                for p in asset.http_probes[:3]
-            )
-            scan_log.add(
-                "recon",
-                f"Host {asset.host} (found via {asset.source}); IPs: "
-                f"{', '.join(asset.ips) or 'none resolved'}; probes: {probes or 'none'}",
-            )
-        for note in recon_result.notes:
-            scan_log.add("recon", note, level="warn")
-
-        for asset in recon_result.assets:
-            session.add(
-                Asset(
-                    scan_id=scan.id,
-                    host=asset.host,
-                    ip_addresses=asset.ips,
-                    http_probes=[
-                        {
-                            "url": p.url,
-                            "status_code": p.status_code,
-                            "title": p.title,
-                            "server": p.server,
-                            "tech": p.tech,
-                            "error": p.error,
-                        }
-                        for p in asset.http_probes
-                    ],
-                    discovery_source=asset.source,
-                )
-            )
+        # Recon goes through the same scope rules, speed and address checks
+        # as everything else (a host exclude rule means "don't touch it").
+        scope_rules = list(
+            (await session.execute(select(ScopeRule).where(ScopeRule.target_id == target.id)))
+            .scalars()
+            .all()
+        )
+        recon_guard = build_scope_guard(target, scope_rules)
+        scan_log.add(
+            "recon",
+            f"Recon: subdomain discovery (subfinder, passive), DNS, then an HTTP probe of each "
+            f"in-scope host at {speed_rps:g} requests/second. This can take a few minutes.",
+        )
+        recon_result = await run_recon(
+            target.root_domain,
+            host_check=recon_adapter.host_check_for(recon_guard),
+            requests_per_second=speed_rps,
+            allow_private_ips=get_settings().recon_allow_private_ips,
+            log=lambda level, message: scan_log.add("recon", message, level=level),
+        )
+        recon_adapter.log_recon(scan_log, recon_result)
+        session.add_all(recon_adapter.asset_rows(scan.id, recon_result))
+        session.add_all(
+            recon_adapter.tool_run_records(scan.id, recon_result.tool_runs, phase="recon")
+        )
+        extra_seeds = recon_adapter.extra_crawl_seeds(
+            recon_result, root_domain=target.root_domain, scope_guard=recon_guard
+        )
 
         await _finish_phase(
             session,
@@ -653,6 +656,11 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
             status=PhaseStatus.COMPLETED,
             stats={
                 "assets_found": len(recon_result.assets),
+                "live_hosts": len(recon_result.live_assets),
+                "tool_runs": [
+                    {"tool": r.tool, "status": r.status, "results": r.results_count}
+                    for r in recon_result.tool_runs
+                ],
                 "tool_availability": recon_result.tool_availability,
                 "wildcard_dns_suspected": recon_result.wildcard_dns_suspected,
                 "notes": recon_result.notes,
@@ -666,11 +674,6 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
         # --- Shared setup for AUTH_ESTABLISHING + CRAWLING ---
         settings = get_settings()
         org = await session.get(Organization, target.organization_id)
-        scope_rules = list(
-            (await session.execute(select(ScopeRule).where(ScopeRule.target_id == target.id)))
-            .scalars()
-            .all()
-        )
         personas = list(
             (
                 await session.execute(
@@ -803,6 +806,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
                         landing_pages=landing_pages,
                         options=scan.options,
                         scan_log=scan_log,
+                        extra_seeds=extra_seeds,
                     )
                 finally:
                     await browser.close()
