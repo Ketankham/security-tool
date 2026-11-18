@@ -69,12 +69,16 @@ class DiscoveredAsset:
 
     @property
     def tech(self) -> list[str]:
+        """httpx's Wappalyzer detections; the raw Server header only when
+        there are none (the built-in prober has no detection)."""
         seen: dict[str, None] = {}
         for probe in self.http_probes:
             for name in probe.tech:
                 seen.setdefault(name, None)
-            if probe.server:
-                seen.setdefault(probe.server, None)
+        if not seen:
+            for probe in self.http_probes:
+                if probe.server:
+                    seen.setdefault(probe.server, None)
         return list(seen)
 
 

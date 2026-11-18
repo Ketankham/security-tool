@@ -162,3 +162,18 @@ def extra_crawl_seeds(
         if len(seeds) >= MAX_EXTRA_CRAWL_HOSTS:
             break
     return seeds
+
+
+def crawl_root_url(result: ReconResult, *, root_domain: str) -> str | None:
+    """Where the root domain actually answered during recon (https, or http
+    when https doesn't), so the crawl doesn't start on a scheme that fails.
+    None when recon couldn't reach it: the crawl then tries https as before."""
+    root = root_domain.lower()
+    for asset in result.live_assets:
+        if asset.host != root:
+            continue
+        for probe in asset.http_probes:
+            if probe.status_code is not None and probe.url.startswith(("https://", "http://")):
+                scheme = probe.url.split("://", 1)[0]
+                return f"{scheme}://{root}/"
+    return None

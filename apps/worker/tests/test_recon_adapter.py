@@ -106,3 +106,28 @@ def test_log_recon_describes_runs_hosts_and_notes():
     assert "int.acme.test: not probed (private ip)" in text
     assert "acme.test" in text and "live" in text
     assert ("recon", "a note", "warn") in log.lines
+
+
+def test_crawl_root_url_uses_the_scheme_that_answered():
+    http_only = _live("acme.test", url="http://acme.test")
+    assert recon_adapter.crawl_root_url(_result([http_only]), root_domain="acme.test") == (
+        "http://acme.test/"
+    )
+    https = _live("acme.test", url="https://acme.test")
+    assert recon_adapter.crawl_root_url(_result([https]), root_domain="acme.test") == (
+        "https://acme.test/"
+    )
+    # Root not reached (or only a subdomain is live): keep the default.
+    assert (
+        recon_adapter.crawl_root_url(_result([_live("api.acme.test")]), root_domain="acme.test")
+        is None
+    )
+    excluded = DiscoveredAsset(
+        host="acme.test",
+        source="root_domain",
+        scope_status="excluded",
+        http_probes=[
+            HttpProbeResult(url="http://acme.test", status_code=200, title=None, server=None)
+        ],
+    )
+    assert recon_adapter.crawl_root_url(_result([excluded]), root_domain="acme.test") is None

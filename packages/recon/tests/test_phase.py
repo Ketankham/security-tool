@@ -176,3 +176,24 @@ async def test_log_callback_announces_commands():
         await run_recon("acme.test", log=lambda level, msg: lines.append((level, msg)))
     assert any(msg.startswith("Running: subfinder -d acme.test") for _, msg in lines)
     assert any("pd-httpx" in msg and "-rl" in msg for _, msg in lines)
+
+
+def test_asset_tech_prefers_detections_over_raw_server_header():
+    from sentinel_recon.models import DiscoveredAsset
+
+    detected = DiscoveredAsset(
+        host="a",
+        source="root_domain",
+        http_probes=[
+            HttpProbeResult(
+                url="u", status_code=200, title=None, server="nginx/1.2", tech=["PHP:8"]
+            )
+        ],
+    )
+    assert detected.tech == ["PHP:8"]
+    header_only = DiscoveredAsset(
+        host="a",
+        source="root_domain",
+        http_probes=[HttpProbeResult(url="u", status_code=200, title=None, server="nginx/1.2")],
+    )
+    assert header_only.tech == ["nginx/1.2"]

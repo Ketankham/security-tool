@@ -9,7 +9,7 @@ import { CoverageCard } from "@/components/CoverageCard";
 import { FindingsList, SeverityBar } from "@/components/FindingsList";
 import type { Finding, Persona, Scan, ScanEndpoint, Target } from "@/lib/types";
 import type { ScanAsset, ToolRun } from "@/lib/types";
-import { hostStatus, techSummary } from "@/components/ReconPanel";
+import { foundBy, hostStatus, techSummary } from "@/components/ReconPanel";
 
 // Step 1C: the scan's report on one printable page (Print / Save as PDF) and
 // as a JSON file. Built from the same data the scan page shows, so it can't
@@ -246,7 +246,7 @@ function Report({ scanId }: { scanId: string }) {
                         </div>
                       ))}
                   </td>
-                  <td>{(a.sources.length ? a.sources : [a.discovery_source]).join(", ")}</td>
+                  <td>{foundBy(a)}</td>
                   <td>{a.tech.join(", ")}</td>
                 </tr>
               ))}

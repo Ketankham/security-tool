@@ -649,6 +649,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
         extra_seeds = recon_adapter.extra_crawl_seeds(
             recon_result, root_domain=target.root_domain, scope_guard=recon_guard
         )
+        recon_root_url = recon_adapter.crawl_root_url(recon_result, root_domain=target.root_domain)
 
         await _finish_phase(
             session,
@@ -803,6 +804,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
                         in_memory_sessions=in_memory_sessions,
                         redis_client=redis_client,
                         browser=browser,
+                        root_url=recon_root_url,
                         landing_pages=landing_pages,
                         options=scan.options,
                         scan_log=scan_log,

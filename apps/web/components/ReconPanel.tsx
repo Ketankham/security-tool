@@ -24,6 +24,18 @@ const RUN_TONE: Record<string, string> = {
   timed_out: "tone-bad",
 };
 
+const SOURCE_NAMES: Record<string, string> = {
+  root_domain: "target domain",
+  common_name: "www (guessed)",
+  crawl: "crawl",
+};
+
+export function foundBy(a: ScanAsset): string {
+  return (a.sources.length ? a.sources : [a.discovery_source])
+    .map((s) => SOURCE_NAMES[s] ?? s)
+    .join(", ");
+}
+
 const cell = { padding: "4px 8px", verticalAlign: "top" } as const;
 
 export function hostStatus(a: ScanAsset): { label: string; tone: string } {
@@ -139,7 +151,9 @@ export function ReconPanel({ scanId, running }: { scanId: string; running: boole
                     {a.endpoints > 0 && <div className="hint">{a.endpoints} endpoint(s) crawled</div>}
                   </td>
                   <td style={cell}>
-                    <span className={`badge ${st.tone}`}>{st.label}</span>
+                    <span className={`badge ${st.tone}`} style={{ whiteSpace: "nowrap" }}>
+                      {st.label}
+                    </span>
                     {a.scope_reason && <div className="hint">{a.scope_reason}</div>}
                   </td>
                   <td style={{ ...cell, wordBreak: "break-all" }}>
@@ -153,10 +167,12 @@ export function ReconPanel({ scanId, running }: { scanId: string; running: boole
                       </div>
                     ))}
                   </td>
-                  <td style={cell} className="mono">
-                    {a.ip_addresses.join(", ") || "—"}
+                  <td style={{ ...cell, whiteSpace: "nowrap" }} className="mono">
+                    {a.ip_addresses.length
+                      ? a.ip_addresses.map((ip) => <div key={ip}>{ip}</div>)
+                      : "—"}
                   </td>
-                  <td style={cell}>{(a.sources.length ? a.sources : [a.discovery_source]).join(", ")}</td>
+                  <td style={cell}>{foundBy(a)}</td>
                   <td style={cell}>
                     {a.tech.map((t) => (
                       <span key={t} className="badge tone-muted" style={{ marginRight: 4, marginBottom: 2, textTransform: "none" }}>
