@@ -18,6 +18,7 @@ from sentinel_core.http_engine import AnonymousSession, HttpEngine, SessionState
 from .models import (
     AccessCandidate,
     AccessControlResult,
+    Comparison,
     ObservedRequest,
     OracleVerdict,
     PersonaIdentity,
@@ -47,6 +48,7 @@ async def run_access_control(
     observed_requests: Sequence[ObservedRequest],
     personas: Sequence[PersonaIdentity],
     session_for: SessionResolver,
+    on_comparison: Callable[[Comparison], None] | None = None,
 ) -> AccessControlResult:
     personas_by_id = {p.persona_id: p for p in personas}
     resolve = anonymous_or(session_for)
@@ -77,6 +79,21 @@ async def run_access_control(
                 q_body=q_resp.body,
                 p_canary_tokens=requesting.canary_tokens,
             )
+            if on_comparison is not None:
+                on_comparison(
+                    Comparison(
+                        url=req.url,
+                        requesting_persona_id=requesting.persona_id,
+                        denied_persona_id=denied_persona.persona_id,
+                        boundaries=tuple(boundaries),
+                        p_status=p_resp.status_code,
+                        q_status=q_resp.status_code,
+                        p_size=len(p_resp.body),
+                        q_size=len(q_resp.body),
+                        verdict=verdict,
+                        detail=detail,
+                    )
+                )
             if verdict == OracleVerdict.NOT_A_FINDING:
                 continue
             if verdict == OracleVerdict.AMBIGUOUS:

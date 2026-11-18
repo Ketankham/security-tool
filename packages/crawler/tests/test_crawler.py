@@ -164,3 +164,44 @@ async def test_one_dead_page_does_not_sink_the_rest_of_the_crawl(mini_app_server
     )
     assert any("Failed to load" in n for n in surface.notes)
     assert surface.pages_visited >= 2, surface.notes
+
+
+async def test_a_redirected_visit_is_recorded_where_it_ended(browser):
+    """A logged-out visitor sent from /dashboard to /login reached /login, not
+    /dashboard: recording the requested URL would claim the visitor reached
+    logged-in content (the pages table said exactly that)."""
+    import asyncio
+
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.responses import HTMLResponse, RedirectResponse
+    from starlette.routing import Route
+
+    from .conftest import _free_port
+
+    async def dashboard(request):
+        return RedirectResponse("/login", status_code=303)
+
+    async def login(request):
+        return HTMLResponse("<html><body>Sign in</body></html>")
+
+    app = Starlette(routes=[Route("/dashboard", dashboard), Route("/login", login)])
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    task = asyncio.create_task(server.serve())
+    while not server.started:
+        await asyncio.sleep(0.01)
+    try:
+        crawler = PersonaCrawler(
+            scope_guard=ScopeGuard(allowed_hosts={"127.0.0.1"}, target_ownership_verified=True),
+            rate_limiter=RateLimiter(FakeRedis(), default_rate_per_sec=1000, burst=1000),
+            target_id="t",
+        )
+        surface = await crawler.crawl(
+            browser, root_url=f"http://127.0.0.1:{port}/dashboard", persona_id="anonymous"
+        )
+    finally:
+        server.should_exit = True
+        await task
+    assert {e.path_template for e in surface.endpoints} == {"/login"}
+    assert surface.pages_visited == 1

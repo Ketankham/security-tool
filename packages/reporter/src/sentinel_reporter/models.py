@@ -77,6 +77,11 @@ class ScanReport:
     findings: list[ReportFinding]
     is_degraded: bool
     degraded_reasons: list[str]
+    # Names of the check groups that ran / were skipped in this scan (for
+    # the scope note). Both empty: the caller did not say, and the note falls
+    # back to the generic wording.
+    checks_run: list[str] = field(default_factory=list)
+    checks_skipped: list[str] = field(default_factory=list)
 
     @property
     def summary(self) -> dict:
@@ -103,11 +108,25 @@ class ScanReport:
             "findings": [f.to_dict() for f in self.findings],
             "is_degraded": self.is_degraded,
             "degraded_reasons": list(self.degraded_reasons),
-            "scope_note": (
-                "This scan ran recon, crawling, and surface mapping"
-                + (", and the authorization engine" if len(self.personas_crawled) > 1 else "")
-                + ". Passive/config checks, injection testing, and session-management checks "
-                "are not implemented yet (docs/05-v1-roadmap.md M3) — their absence from "
-                "`findings` means they didn't run, not that the target is clean."
-            ),
+            "checks_run": list(self.checks_run),
+            "checks_skipped": list(self.checks_skipped),
+            "scope_note": self._scope_note(),
         }
+
+    def _scope_note(self) -> str:
+        if self.checks_run or self.checks_skipped:
+            ran = ", ".join(self.checks_run) or "no checks"
+            note = f"This scan ran recon, crawling and surface mapping, then: {ran}."
+            if self.checks_skipped:
+                note += (
+                    f" Not run: {', '.join(self.checks_skipped)}. Their absence from `findings` "
+                    "means they did not run, not that the target is clean."
+                )
+            return note
+        return (
+            "This scan ran recon, crawling, and surface mapping"
+            + (", and the authorization engine" if len(self.personas_crawled) > 1 else "")
+            + ". Passive/config checks, injection testing, and session-management checks "
+            "may not have run (docs/05-v1-roadmap.md M3) — their absence from "
+            "`findings` means they didn't run, not that the target is clean."
+        )

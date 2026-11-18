@@ -65,3 +65,20 @@ def test_to_dict_includes_degraded_reasons_verbatim():
     body = report.to_dict()
     assert body["is_degraded"] is True
     assert body["degraded_reasons"] == ["recon tool X unavailable"]
+
+
+def test_scope_note_names_the_checks_that_ran_and_the_ones_that_did_not():
+    report = _make_report(personas_crawled=["anonymous", "member-a"])
+    report = type(report)(
+        **{
+            **{f: getattr(report, f) for f in report.__dataclass_fields__},
+            "checks_run": ["security headers, cookies, CORS, exposed files and TLS"],
+            "checks_skipped": ["injection testing", "session management"],
+        }
+    )
+    body = report.to_dict()
+    assert body["checks_run"] == ["security headers, cookies, CORS, exposed files and TLS"]
+    assert body["checks_skipped"] == ["injection testing", "session management"]
+    assert "then: security headers, cookies, CORS, exposed files and TLS." in body["scope_note"]
+    assert "Not run: injection testing, session management." in body["scope_note"]
+    assert "did not run, not that the target is clean" in body["scope_note"]

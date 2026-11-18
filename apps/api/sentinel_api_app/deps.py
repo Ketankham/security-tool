@@ -17,12 +17,13 @@ from uuid import UUID
 from fastapi import Depends, Header, HTTPException, status
 from sentinel_core.crypto import EnvelopeCrypto, LocalMasterKeyProvider
 from sentinel_db import get_session
-from sentinel_db.models import Organization, Target
+from sentinel_db.models import Organization, Scan, Target
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import Settings, get_settings
 
-__all__ = ["get_current_org", "get_crypto", "get_owned_target", "SessionDep"]
+__all__ = ["get_current_org", "get_crypto", "get_owned_target", "get_owned_scan", "SessionDep"]
 
 SessionDep = get_session
 
@@ -77,3 +78,21 @@ async def get_owned_target(
     if target is None or target.organization_id != org.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Target not found.")
     return target
+
+
+async def get_owned_scan(
+    scan_id: UUID,
+    org: Organization = Depends(get_current_org),
+    session: AsyncSession = Depends(get_session),
+) -> Scan:
+    """A scan, only if its target belongs to the caller's org (joined through
+    Target, so another org's scan id is a plain 404)."""
+    result = await session.execute(
+        select(Scan)
+        .join(Target, Scan.target_id == Target.id)
+        .where(Scan.id == scan_id, Target.organization_id == org.id)
+    )
+    scan = result.scalar_one_or_none()
+    if scan is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Scan not found.")
+    return scan

@@ -192,3 +192,41 @@ export interface Finding {
   evidence: Evidence[];
   verification: Verification | null;
 }
+
+// --- Scan insight: activity log, found endpoints, evidence ---
+
+export interface ScanEvent {
+  seq: number;
+  at: string;
+  stage: string;
+  level: "info" | "warn" | "error";
+  persona: string | null;
+  message: string;
+  data: Record<string, unknown>;
+}
+
+export interface ScanEventsPage {
+  events: ScanEvent[];
+  total: number;
+  last_seq: number;
+}
+
+export interface ScanEndpoint {
+  host: string;
+  method: string;
+  path_template: string;
+  source: string;
+  persona_ids: string[];
+}
+
+export interface TranscriptDoc {
+  request?: { method?: string; url?: string; headers?: Record<string, string>; body?: string | null };
+  response?: {
+    status_code?: number;
+    headers?: Record<string, string>;
+    body?: string | null;
+    elapsed_ms?: number;
+  } | null;
+  error?: string | null;
+  recorded_at?: string;
+}

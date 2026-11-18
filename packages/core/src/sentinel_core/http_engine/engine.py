@@ -50,6 +50,9 @@ class EngineResponse:
     elapsed_ms: float
     transcript_id: str
     url: str
+    # Each Set-Cookie header separately: ``headers`` is a dict, which can only
+    # keep them joined into one string (and a cookie's Expires holds a comma).
+    set_cookies: tuple[str, ...] = ()
 
     @property
     def text(self) -> str:
@@ -97,7 +100,12 @@ class HttpEngine:
         body: bytes | None = None,
         link_text: str = "",
         skip_destructive_guard: bool = False,
+        withhold_body: bool = False,
     ) -> EngineResponse:
+        """``withhold_body``: store the request and the response status and
+        headers as evidence but not the response body. For probes that may
+        return a client's secrets (an exposed .env file): the finding must be
+        provable without copying the secrets into our own storage."""
         persona = persona or AnonymousSession()
         method = method.upper()
 
@@ -151,6 +159,7 @@ class HttpEngine:
         req = RecordedRequest(method=method, url=url, headers=dict(request_headers), body=body)
 
         response_obj: RecordedResponse | None = None
+        set_cookies: tuple[str, ...] = ()
         error: str | None = None
         attempt = 0
         max_attempts = 1 + (self._max_retries if method in _IDEMPOTENT_METHODS else 0)
@@ -169,6 +178,7 @@ class HttpEngine:
                     body=httpx_response.content,
                     elapsed_ms=elapsed_ms,
                 )
+                set_cookies = tuple(httpx_response.headers.get_list("set-cookie"))
 
                 if httpx_response.status_code in _RATE_LIMITED_STATUS_CODES:
                     await self._rate_limiter.report_backpressure(
@@ -188,11 +198,20 @@ class HttpEngine:
                 if attempt >= max_attempts:
                     break
 
+        recorded_response = response_obj
+        if withhold_body and response_obj is not None:
+            recorded_response = RecordedResponse(
+                status_code=response_obj.status_code,
+                headers=response_obj.headers,
+                body=f"[body withheld: {len(response_obj.body or b'')} bytes, "
+                "not stored because it may contain secrets]".encode(),
+                elapsed_ms=response_obj.elapsed_ms,
+            )
         transcript_id = await self._recorder.record(
             scan_id=self._scan_id,
             persona_id=getattr(persona, "persona_id", None),
             request=req,
-            response=response_obj,
+            response=recorded_response,
             error=error if response_obj is None else None,
         )
 
@@ -206,4 +225,5 @@ class HttpEngine:
             elapsed_ms=response_obj.elapsed_ms,
             transcript_id=transcript_id,
             url=url,
+            set_cookies=set_cookies,
         )

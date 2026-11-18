@@ -8,6 +8,7 @@ from .organization import Organization, User
 from .persona import Credential, Persona
 from .report import Report
 from .scan import Scan, ScanPhase, ScanPolicy
+from .scan_event import ScanEvent
 from .target import ScopeRule, Target
 from .transcript import TranscriptRecord
 
@@ -22,6 +23,7 @@ __all__ = [
     "ScanPolicy",
     "Scan",
     "ScanPhase",
+    "ScanEvent",
     "Asset",
     "Endpoint",
     "Parameter",
