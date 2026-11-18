@@ -104,7 +104,7 @@ async def test_run_scan_completes_with_degraded_notes_and_a_report(db_engine):
         assert phase_by_name[ScanPhaseName.CRAWLING].status == PhaseStatus.COMPLETED
         assert phase_by_name[ScanPhaseName.CRAWLING].stats_json["personas_crawled"] == ["anonymous"]
         assert phase_by_name[ScanPhaseName.SURFACE_MAPPING].status == PhaseStatus.COMPLETED
-        assert phase_by_name[ScanPhaseName.PASSIVE_CHECKS].status == PhaseStatus.SKIPPED
+        assert phase_by_name[ScanPhaseName.PASSIVE_CHECKS].status == PhaseStatus.COMPLETED
         assert phase_by_name[ScanPhaseName.ACCESS_CONTROL].status == PhaseStatus.COMPLETED
         assert phase_by_name[ScanPhaseName.ACCESS_CONTROL].stats_json["observed_requests"] == 0
         assert phase_by_name[ScanPhaseName.ACTIVE_INJECTION].status == PhaseStatus.SKIPPED

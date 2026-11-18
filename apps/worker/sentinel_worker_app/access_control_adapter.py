@@ -17,7 +17,9 @@ from sentinel_auth import PersonaSession
 from sentinel_checks.access_control import (
     ANONYMOUS_PERSONA_ID,
     AccessCandidate,
+    Comparison,
     ObservedRequest,
+    OracleVerdict,
     PersonaIdentity,
     run_access_control,
 )
@@ -27,6 +29,14 @@ from sentinel_core.http_engine import HttpEngine, SessionState
 from sentinel_crawler import SurfaceMap
 from sentinel_db.enums import FindingConfidence, FindingSeverity, FindingStatus
 from sentinel_db.models import Evidence, Finding, Persona, Scan, TranscriptRecord, Verification
+
+from .scan_log import NULL_LOG, NullScanLog, ScanLog
+
+_VERDICT_TEXT = {
+    OracleVerdict.NOT_A_FINDING: "no access problem",
+    OracleVerdict.AMBIGUOUS: "unclear, so not reported",
+    OracleVerdict.CONFIRMED_BY_CANARY: "ACCESS PROBLEM (a marker value leaked)",
+}
 
 # Deterministic per-rule metadata (docs/03-check-catalogue.md §7: consistency
 # matters more than nuance — the same bug must score the same way on every
@@ -214,6 +224,7 @@ async def run_access_control_and_verify(
     personas: list[Persona],
     in_memory_sessions: dict[str, dict],
     http_engine: HttpEngine,
+    log: ScanLog | NullScanLog = NULL_LOG,
 ) -> tuple[AccessControlStats, list[Finding], list[TranscriptRecord]]:
     """Runs Phase 6 (steps 1-3) against everything the crawl found, then
     Phase 9 against every candidate it produces. Returns fully-constructed
@@ -231,12 +242,56 @@ async def run_access_control_and_verify(
         in_memory_sessions=in_memory_sessions, target_host=target_host
     )
 
+    labels = {str(p.id): p.label for p in personas}
+    labels[ANONYMOUS_PERSONA_ID] = "Logged-out visitor"
+
+    def name(persona_id: str) -> str:
+        return labels.get(persona_id, persona_id[:8])
+
+    comparisons = 0
+
+    def log_comparison(c: Comparison) -> None:
+        nonlocal comparisons
+        comparisons += 1
+        log.add(
+            "access_control",
+            f"GET {c.url}: {name(c.requesting_persona_id)} got {c.p_status} ({c.p_size} B), "
+            f"{name(c.denied_persona_id)} got {c.q_status} ({c.q_size} B) -> "
+            f"{_VERDICT_TEXT.get(c.verdict, c.verdict.value)}. {c.detail}",
+            persona=name(c.requesting_persona_id),
+            boundaries=",".join(c.boundaries),
+            verdict=c.verdict.value,
+        )
+
+    if not identities:
+        log.add(
+            "access_control",
+            "No login worked, so there is nothing to compare: the authorization check "
+            "needs at least one logged-in persona to test against a logged-out visitor.",
+            level="warn",
+        )
+    else:
+        log.add(
+            "access_control",
+            f"Replaying {len([r for r in observed if r.method == 'GET'])} discovered GET "
+            f"request(s) as each logged-in persona "
+            f"({', '.join(name(i.persona_id) for i in identities)}) and as every identity that "
+            "should be denied (a logged-out visitor, lower-trust or other-tenant personas).",
+        )
+
     result = await run_access_control(
         http_engine=http_engine,
         observed_requests=observed,
         personas=identities,
         session_for=session_for,
+        on_comparison=log_comparison,
     )
+    if identities:
+        log.add(
+            "access_control",
+            f"{comparisons} comparison(s) made: {len(result.candidates)} access problem(s), "
+            f"{result.ambiguous_count} unclear.",
+        )
 
     confirmed = probable = 0
     findings: list[Finding] = []

@@ -15,9 +15,12 @@ import type {
   Persona,
   Scan,
   ScanDepth,
+  ScanEndpoint,
+  ScanEventsPage,
   ScanSpeed,
   ScopeRule,
   Target,
+  TranscriptDoc,
 } from "./types";
 import type { LoginRecipe } from "@/components/LoginRecipeFields";
 
@@ -201,6 +204,44 @@ export const api = {
     }),
   retryScan: (scanId: string) => request<Scan>(`/scans/${scanId}/retry`, { method: "POST" }),
 
+  // What a scan did (activity log, found endpoints, evidence).
+  listScanEvents: (scanId: string, afterSeq = 0, limit = 2000) =>
+    request<ScanEventsPage>(`/scans/${scanId}/events?after_seq=${afterSeq}&limit=${limit}`),
+  listScanEndpoints: (scanId: string) => request<ScanEndpoint[]>(`/scans/${scanId}/endpoints`),
+  getTranscript: (scanId: string, transcriptId: string) =>
+    request<TranscriptDoc>(`/scans/${scanId}/transcripts/${transcriptId}`),
+  getScanReport: (scanId: string) =>
+    request<Record<string, unknown>>(`/scans/${scanId}/report`),
+
   // Findings.
   listFindings: (scanId: string) => request<Finding[]>(`/scans/${scanId}/findings`),
 };
+
+/** Downloads the scan's activity log as a text file. A plain link can't be
+ * used: the API needs the X-Org-Id header, which only fetch can send. */
+export async function downloadScanLog(scanId: string): Promise<void> {
+  const orgId = getOrgId();
+  if (!orgId) throw new ApiError(401, "No organization selected.");
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/scans/${scanId}/events/download`, {
+      headers: { "X-Org-Id": orgId },
+    });
+  } catch {
+    throw new ApiError(0, `Cannot reach the API at ${API_BASE}. Is it running?`);
+  }
+  if (!res.ok) throw new ApiError(res.status, `${res.status} ${res.statusText}`);
+  saveBlob(await res.blob(), `scan-${scanId.slice(0, 8)}-log.txt`);
+}
+
+/** Saves text/JSON the page already holds as a file. */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

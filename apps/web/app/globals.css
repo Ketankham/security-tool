@@ -488,3 +488,46 @@ textarea {
 input[aria-invalid="true"] {
   border-color: var(--bad);
 }
+
+/* --- Report: printing / saving as PDF --------------------------------------- */
+@media print {
+  :root {
+    --bg: #fff;
+    --bg-elev: #fff;
+    --bg-elev-2: #f3f4f6;
+    --border: #cfd4dc;
+    --text: #111827;
+    --text-dim: #374151;
+    --text-faint: #4b5563;
+    --accent: #1d4ed8;
+    --ok: #047857;
+    --warn: #b45309;
+    --bad: #b91c1c;
+    --sev-critical: #b91c1c;
+    --sev-high: #c2410c;
+    --sev-medium: #a16207;
+    --sev-low: #1d4ed8;
+    --sev-info: #4b5563;
+  }
+  html,
+  body {
+    background: #fff;
+    font-size: 12px;
+  }
+  .topbar,
+  .no-print,
+  .crumbs {
+    display: none !important;
+  }
+  .card {
+    box-shadow: none;
+    break-inside: avoid;
+  }
+  .list-item {
+    break-inside: avoid;
+  }
+  pre.block {
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+}

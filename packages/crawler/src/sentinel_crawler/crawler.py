@@ -16,7 +16,8 @@ links, because that's how new pages get discovered at all.
 from __future__ import annotations
 
 import contextlib
-from typing import cast
+from collections.abc import Callable
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 from playwright.async_api import Browser, Page, Request, StorageState
@@ -35,6 +36,12 @@ from .surface_mapper import normalize_path
 _INTERESTING_RESOURCE_TYPES = frozenset({"xhr", "fetch"})
 
 
+# on_event(kind, persona_id, details): "visit" (url, final_url, status, links,
+# forms, new), "skip" (url, reason), "fail" (url, error), "limit" (remaining).
+# The scan's activity log hangs off this; it must never raise into the crawl.
+CrawlEventSink = Callable[[str, str, dict[str, Any]], None]
+
+
 class PersonaCrawler:
     def __init__(
         self,
@@ -45,7 +52,9 @@ class PersonaCrawler:
         destructive_guard: DestructiveActionGuard | None = None,
         max_pages: int = 30,
         page_timeout_s: float = 15.0,
+        on_event: CrawlEventSink | None = None,
     ) -> None:
+        self._on_event = on_event
         self._scope_guard = scope_guard
         self._rate_limiter = rate_limiter
         self._target_id = target_id
@@ -81,6 +90,7 @@ class PersonaCrawler:
         surface = SurfaceMap(root_url=root_url, persona_id=persona_id)
         seen_templates: set[tuple[str, str]] = set()  # (method, path_template) already recorded
         visited: set[str] = set()
+        loaded = 0  # pages actually loaded (a redirect still counts once)
         queue: list[str] = [root_url, *[u for u in (seeds or []) if u != root_url]]
         # Hosts whose links are followed. Starts as the root URL's host; when
         # the site redirects (abhyaasika.com -> www.abhyaasika.com, QA #37)
@@ -100,7 +110,7 @@ class PersonaCrawler:
         watch(page)
 
         try:
-            while queue and len(visited) < self._max_pages:
+            while queue and loaded < self._max_pages:
                 url = queue.pop(0)
                 if url in visited:
                     continue
@@ -108,19 +118,25 @@ class PersonaCrawler:
                 decision = self._scope_guard.evaluate(method="GET", url=url)
                 if not decision.allowed:
                     surface.notes.append(f"Skipped out-of-scope URL: {url} ({decision.reason})")
+                    self._emit(
+                        "skip", persona_id, url=url, reason=f"out of scope: {decision.reason}"
+                    )
                     continue
 
                 check = self._destructive_guard.check(method="GET", url=url)
                 if check.is_suspect:
                     surface.notes.append(f"Skipped suspected-destructive URL: {url}")
+                    self._emit("skip", persona_id, url=url, reason="looks destructive")
                     continue
 
                 await self._rate_limiter.acquire(self._target_id)
 
                 try:
-                    await page.goto(url, timeout=self._page_timeout_s * 1000)
+                    response = await page.goto(url, timeout=self._page_timeout_s * 1000)
                 except Exception as exc:  # noqa: BLE001 — a dead/slow link shouldn't kill the crawl
-                    surface.notes.append(f"Failed to load {url}: {str(exc).splitlines()[0]}")
+                    reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+                    surface.notes.append(f"Failed to load {url}: {reason}")
+                    self._emit("fail", persona_id, url=url, error=reason)
                     # A failed load leaves the tab on a still-settling error
                     # page, and the next goto is then "interrupted by another
                     # navigation": one dead link used to sink every page after
@@ -131,11 +147,21 @@ class PersonaCrawler:
                     continue
 
                 visited.add(url)
+                loaded += 1
                 landed = page.url
                 if landed and landed != url:
                     visited.add(landed)
                     self._adopt_host(landed, site_hosts)
-                self._record_endpoint("GET", url, "link", persona_id, surface, seen_templates)
+                    # Record where the visit really ended, not the URL asked
+                    # for: a logged-out visitor sent from /dashboard to /login
+                    # reached /login, and saying it reached /dashboard would
+                    # be exactly the wrong answer for an access check.
+                    if self._scope_guard.evaluate(method="GET", url=landed).allowed:
+                        self._record_endpoint(
+                            "GET", landed, "link", persona_id, surface, seen_templates
+                        )
+                else:
+                    self._record_endpoint("GET", url, "link", persona_id, surface, seen_templates)
 
                 links = await self._extract_same_origin_links(page, site_hosts)
                 forms = await self._extract_forms(page, root_url, site_hosts)
@@ -145,6 +171,7 @@ class PersonaCrawler:
                         method, form_url, "form", persona_id, surface, seen_templates
                     )
 
+                new_links = 0
                 for link in links:
                     if link not in visited and link not in queue:
                         link_check = self._destructive_guard.check(method="GET", url=link)
@@ -154,10 +181,25 @@ class PersonaCrawler:
                             self._record_endpoint(
                                 "GET", link, "link", persona_id, surface, seen_templates
                             )
+                            self._emit("skip", persona_id, url=link, reason="looks destructive")
                             continue
                         queue.append(link)
+                        new_links += 1
 
-            surface.pages_visited = len(visited)
+                self._emit(
+                    "visit",
+                    persona_id,
+                    url=url,
+                    final_url=landed if landed and landed != url else None,
+                    status=response.status if response is not None else None,
+                    links=len(links),
+                    forms=len(forms),
+                    new=new_links,
+                )
+
+            if queue and loaded >= self._max_pages:
+                self._emit("limit", persona_id, remaining=len(queue), max_pages=self._max_pages)
+            surface.pages_visited = loaded
             return surface
         finally:
             await context.close()
@@ -202,6 +244,12 @@ class PersonaCrawler:
                 persona_id=persona_id,
             )
         )
+
+    def _emit(self, kind: str, persona_id: str, **details: Any) -> None:
+        if self._on_event is None:
+            return
+        with contextlib.suppress(Exception):  # logging must never break a crawl
+            self._on_event(kind, persona_id, details)
 
     def _adopt_host(self, url: str, site_hosts: set[str]) -> None:
         parts = urlsplit(url)

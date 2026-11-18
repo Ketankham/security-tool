@@ -63,6 +63,18 @@ async def build_scan_report(
         for f in findings
     ]
 
+    # Which groups of checks actually ran (from the scan's own phase records).
+    labels = {
+        "passive_checks": "security headers, cookies, CORS, exposed files and TLS",
+        "access_control": "authorization (who can reach what)",
+        "active_injection": "injection testing",
+        "session_checks": "session management",
+        "business_logic": "business logic",
+    }
+    by_name = {p.name.value: p.status.value for p in scan.phases}
+    checks_run = [text for key, text in labels.items() if by_name.get(key) == "completed"]
+    checks_skipped = [text for key, text in labels.items() if by_name.get(key) == "skipped"]
+
     return ScanReport(
         scan_id=str(scan.id),
         target_root_domain=target.root_domain,
@@ -74,6 +86,8 @@ async def build_scan_report(
         findings=report_findings,
         is_degraded=scan.is_degraded,
         degraded_reasons=list(scan.degraded_reasons),
+        checks_run=checks_run,
+        checks_skipped=checks_skipped,
     )
 
 

@@ -87,6 +87,25 @@ class AccessCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class Comparison:
+    """One replay the engine made: the same GET as the requesting persona and
+    as a persona that should be denied, and how it judged the two answers.
+    Reported through ``run_access_control(on_comparison=...)`` so the scan's
+    activity log can show the reviewer exactly what was compared."""
+
+    url: str
+    requesting_persona_id: str
+    denied_persona_id: str
+    boundaries: tuple[str, ...]
+    p_status: int
+    q_status: int
+    p_size: int
+    q_size: int
+    verdict: OracleVerdict
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
 class AccessControlResult:
     """``candidates`` only ever holds CONFIRMED_BY_CANARY verdicts — an
     AMBIGUOUS diff has nothing adjudicating it yet (no Layer 4), and turning

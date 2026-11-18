@@ -26,6 +26,7 @@ satisfied by finishing instead of pausing).
 
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 import uuid
@@ -66,16 +67,14 @@ from sqlalchemy.orm import selectinload
 from .access_control_adapter import AccessControlStats, run_access_control_and_verify
 from .auth_adapter import establish_persona
 from .config import Settings, get_settings
+from .passive_adapter import PassiveStats, run_passive_and_verify
 from .report_adapter import build_scan_report, persist_report
+from .scan_log import NULL_LOG, NullScanLog, ScanLog
 from .substrate import build_http_engine, build_report_store, build_scope_guard
 from .surface_adapter import merge_surface_map
 
 log = structlog.get_logger(__name__)
 
-SKIPPED_PASSIVE_CHECKS_NOTE = (
-    "Passive/config checks (headers, cookies, CORS, TLS, nuclei) are not "
-    "implemented yet — M3 breadth work (docs/05-v1-roadmap.md)."
-)
 SKIPPED_ACTIVE_INJECTION_NOTE = (
     "Active injection testing (XSS, SQLi, SSTI, SSRF, ...) is not "
     "implemented yet — M3 (docs/05-v1-roadmap.md)."
@@ -89,6 +88,53 @@ SKIPPED_BUSINESS_LOGIC_NOTE = (
     "Business-logic testing is deliberately out of v1 scope — human/"
     "Verified-tier only (docs/05-v1-roadmap.md)."
 )
+
+
+# The scan's activity log, set by run_scan for the duration of one scan. Phase
+# start/finish are logged from _start_phase/_finish_phase below, so every phase
+# is covered without threading the log through each call site.
+_CURRENT_LOG: contextvars.ContextVar[ScanLog | NullScanLog] = contextvars.ContextVar(
+    "scan_log", default=NULL_LOG
+)
+
+_STAGE_OF_PHASE = {
+    ScanPhaseName.SCOPE_VERIFYING: "scope",
+    ScanPhaseName.RECON: "recon",
+    ScanPhaseName.AUTH_ESTABLISHING: "auth",
+    ScanPhaseName.CRAWLING: "crawl",
+    ScanPhaseName.SURFACE_MAPPING: "surface",
+    ScanPhaseName.PASSIVE_CHECKS: "passive_checks",
+    ScanPhaseName.ACTIVE_INJECTION: "injection",
+    ScanPhaseName.ACCESS_CONTROL: "access_control",
+    ScanPhaseName.SESSION_CHECKS: "session",
+    ScanPhaseName.BUSINESS_LOGIC: "business_logic",
+    ScanPhaseName.VERIFYING: "verify",
+    ScanPhaseName.TRIAGING: "triage",
+    ScanPhaseName.REPORTING: "report",
+}
+
+
+def _phase_title(name: ScanPhaseName) -> str:
+    return name.value.replace("_", " ")
+
+
+def _scalar_stats(stats: dict) -> str:
+    parts = [
+        f"{k}={v}"
+        for k, v in stats.items()
+        if isinstance(v, bool | int | float | str) and len(str(v)) <= 80
+    ]
+    return ", ".join(parts)
+
+
+def _session_secrets(storage_state: dict | None) -> list[str]:
+    """Values that must never appear in the log: a login's cookies and any
+    pasted header."""
+    if not storage_state:
+        return []
+    values = [str(c.get("value", "")) for c in storage_state.get("cookies", [])]
+    values += [str(v) for v in (storage_state.get("sentinel_headers") or {}).values()]
+    return values
 
 
 async def _get_or_create_phase(session: AsyncSession, scan: Scan, name: ScanPhaseName) -> ScanPhase:
@@ -106,6 +152,9 @@ async def _start_phase(session: AsyncSession, phase: ScanPhase) -> None:
     phase.status = PhaseStatus.RUNNING
     phase.started_at = datetime.now(UTC)
     await session.flush()
+    _CURRENT_LOG.get().add(
+        _STAGE_OF_PHASE.get(phase.name, "scan"), f"Started: {_phase_title(phase.name)}"
+    )
 
 
 async def _finish_phase(
@@ -121,6 +170,12 @@ async def _finish_phase(
     phase.stats_json = stats
     phase.error = error
     await session.flush()
+    detail = f" ({error})" if error else (f" ({_scalar_stats(stats)})" if stats else "")
+    _CURRENT_LOG.get().add(
+        _STAGE_OF_PHASE.get(phase.name, "scan"),
+        f"{status.value.capitalize()}: {_phase_title(phase.name)}{detail}",
+        level="warn" if status is PhaseStatus.FAILED else "info",
+    )
 
 
 async def _run_auth_establishing(
@@ -134,6 +189,7 @@ async def _run_auth_establishing(
     redis_client: Redis,
     browser: Browser,
     oracle_probe_url: str | None = None,
+    scan_log: ScanLog | NullScanLog = NULL_LOG,
 ) -> tuple[dict, dict[str, dict]]:
     """Returns (stats, {persona_id: storage_state}) for personas that became
     available this run. Never raises for an individual persona's login
@@ -172,6 +228,13 @@ async def _run_auth_establishing(
 
     try:
         for persona in configured_personas:
+            recipe = persona.login_recipe or {}
+            scan_log.add(
+                "auth",
+                f"Logging in as '{persona.label}' (method: {recipe.get('strategy') or 'form'}) "
+                f"using {recipe.get('start_url')}",
+                persona=persona.label,
+            )
             try:
                 result = await establish_persona(
                     persona=persona,
@@ -192,11 +255,31 @@ async def _run_auth_establishing(
                     if str(exc)
                     else f"Login crashed: {type(exc).__name__}"
                 )
+                scan_log.add(
+                    "auth",
+                    persona.unavailable_reason,
+                    level="error",
+                    persona=persona.label,
+                )
                 continue
             persona.is_available = result.available
             persona.unavailable_reason = result.unavailable_reason
             if not result.available:
+                scan_log.add(
+                    "auth",
+                    f"Login failed: {result.unavailable_reason}",
+                    level="warn",
+                    persona=persona.label,
+                    final_url=result.final_url,
+                )
                 continue
+            scan_log.add_secrets(_session_secrets(result.storage_state))
+            scan_log.add(
+                "auth",
+                f"Login worked; the browser ended on {result.final_url}. "
+                f"Logged-in check: {result.oracle_detail or 'not run'}",
+                persona=persona.label,
+            )
 
             auth_stats["personas_available"] += 1
             if result.final_url:
@@ -239,17 +322,49 @@ async def _run_crawling(
     root_url: str | None = None,
     landing_pages: dict[str, str] | None = None,
     options: dict | None = None,
+    scan_log: ScanLog | NullScanLog = NULL_LOG,
 ) -> list[SurfaceMap]:
     """``root_url`` defaults to the target's own root URL; tests pass an
     explicit one — see _run_auth_establishing's docstring for why."""
     scope_guard = build_scope_guard(target, scope_rules)
     requests_per_second, max_pages = scan_options_mod.resolve(options)
     rate_limiter = RateLimiter(redis_client, default_rate_per_sec=requests_per_second)
+    labels = {str(p.id): p.label for p in configured_personas}
+    labels["anonymous"] = "Logged-out visitor"
+
+    def crawl_event(kind: str, persona_id: str, d: dict) -> None:
+        who = labels.get(persona_id, persona_id[:8])
+        if kind == "visit":
+            status = d.get("status")
+            moved = f" (redirected to {d['final_url']})" if d.get("final_url") else ""
+            scan_log.add(
+                "crawl",
+                f"Visited {d['url']}: HTTP {status}{moved}; {d['links']} link(s) "
+                f"({d['new']} new), {d['forms']} form(s)",
+                level="warn" if isinstance(status, int) and status >= 400 else "info",
+                persona=who,
+            )
+        elif kind == "skip":
+            scan_log.add("crawl", f"Skipped {d['url']}: {d['reason']}", persona=who)
+        elif kind == "fail":
+            scan_log.add(
+                "crawl", f"Could not load {d['url']}: {d['error']}", level="warn", persona=who
+            )
+        elif kind == "limit":
+            scan_log.add(
+                "crawl",
+                f"Stopped at the depth limit ({d['max_pages']} pages); {d['remaining']} more "
+                "page(s) were queued but not visited. Choose a deeper scan to cover them.",
+                level="warn",
+                persona=who,
+            )
+
     crawler = PersonaCrawler(
         scope_guard=scope_guard,
         rate_limiter=rate_limiter,
         target_id=str(target.id),
         max_pages=max_pages,
+        on_event=crawl_event,
     )
     effective_root_url = root_url or f"https://{target.root_domain}/"
 
@@ -261,6 +376,12 @@ async def _run_crawling(
         *(p.login_recipe.get("start_url") for p in configured_personas if p.login_recipe),
         *landing_pages.values(),
     ]
+    scan_log.add(
+        "crawl",
+        f"Crawling {effective_root_url} (speed {requests_per_second:g} req/s, up to {max_pages} "
+        "pages per identity), first as a logged-out visitor.",
+        persona="Logged-out visitor",
+    )
     surfaces: list[SurfaceMap] = [
         await crawler.crawl(
             browser,
@@ -269,10 +390,23 @@ async def _run_crawling(
             seeds=[u for u in anon_seeds if u],
         )
     ]
+    scan_log.add(
+        "crawl",
+        f"Logged-out crawl done: {surfaces[0].pages_visited} page(s), "
+        f"{len(surfaces[0].endpoints)} endpoint(s).",
+        persona="Logged-out visitor",
+    )
     for persona in configured_personas:
         storage_state = in_memory_sessions.get(str(persona.id))
         if storage_state is None:
+            scan_log.add(
+                "crawl",
+                f"Not crawled as '{persona.label}': its login did not work.",
+                level="warn",
+                persona=persona.label,
+            )
             continue  # this persona never became available this run
+        scan_log.add("crawl", f"Crawling as '{persona.label}'.", persona=persona.label)
         surfaces.append(
             await crawler.crawl(
                 browser,
@@ -298,6 +432,7 @@ async def _run_access_control(
     settings: Settings,
     redis_client: Redis,
     target_host: str | None = None,
+    scan_log: ScanLog | NullScanLog = NULL_LOG,
 ) -> tuple[AccessControlStats, list[Finding], list[TranscriptRecord]]:
     """``target_host`` defaults to the target's own root domain; tests pass
     an explicit one — see _run_auth_establishing's docstring for why."""
@@ -318,6 +453,43 @@ async def _run_access_control(
             personas=personas,
             in_memory_sessions=in_memory_sessions,
             http_engine=engine,
+            log=scan_log,
+        )
+    finally:
+        await engine.aclose()
+
+
+async def _run_passive(
+    *,
+    scan: Scan,
+    target: Target,
+    scope_rules: list[ScopeRule],
+    surfaces: list[SurfaceMap],
+    personas: list[Persona],
+    in_memory_sessions: dict[str, dict],
+    settings: Settings,
+    redis_client: Redis,
+    scan_log: ScanLog | NullScanLog = NULL_LOG,
+) -> tuple[PassiveStats, list[Finding], list[TranscriptRecord]]:
+    scope_guard = build_scope_guard(target, scope_rules)
+    engine = build_http_engine(
+        scope_guard=scope_guard,
+        redis_client=redis_client,
+        settings=settings,
+        target_id=str(target.id),
+        scan_id=str(scan.id),
+        requests_per_second=scan_options_mod.resolve(scan.options)[0],
+    )
+    try:
+        return await run_passive_and_verify(
+            scan=scan,
+            fallback_origin=f"https://{target.root_domain}",
+            surfaces=surfaces,
+            personas=personas,
+            in_memory_sessions=in_memory_sessions,
+            http_engine=engine,
+            scope_guard=scope_guard,
+            log=scan_log,
         )
     finally:
         await engine.aclose()
@@ -338,6 +510,25 @@ async def _first_invalid_regex_rule(
 
 
 async def run_scan(scan_id: str) -> None:
+    scan_log = ScanLog(uuid.UUID(scan_id))
+    scan_log.start()
+    token = _CURRENT_LOG.set(scan_log)
+    try:
+        await _run_scan(scan_id, scan_log)
+    except Exception as exc:
+        scan_log.add(
+            "scan",
+            f"The scan crashed: {type(exc).__name__}: "
+            f"{str(exc).splitlines()[0] if str(exc) else ''}",
+            level="error",
+        )
+        raise
+    finally:
+        _CURRENT_LOG.reset(token)
+        await scan_log.close()
+
+
+async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
     async with open_session() as session:
         # `selectinload` here matters, not just for speed: AsyncSession
         # forbids implicit lazy I/O on plain attribute access (`scan.phases`
@@ -357,6 +548,12 @@ async def run_scan(scan_id: str) -> None:
             return
 
         machine = ScanStateMachine(current=scan.state, paused_from=scan.paused_from)
+        speed_rps, depth_pages = scan_options_mod.resolve(scan.options)
+        scan_log.add(
+            "scan",
+            f"Scan started for {target.root_domain} (speed {speed_rps:g} requests/second, "
+            f"up to {depth_pages} pages per identity; started by: {scan.triggered_by}).",
+        )
 
         # --- Phase: SCOPE_VERIFYING ---
         phase = await _get_or_create_phase(session, scan, ScanPhaseName.SCOPE_VERIFYING)
@@ -416,6 +613,18 @@ async def run_scan(scan_id: str) -> None:
         await session.commit()
 
         recon_result = await run_recon(target.root_domain)
+        for asset in recon_result.assets:
+            probes = ", ".join(
+                f"{p.url} -> {p.status_code if p.status_code is not None else p.error}"
+                for p in asset.http_probes[:3]
+            )
+            scan_log.add(
+                "recon",
+                f"Host {asset.host} (found via {asset.source}); IPs: "
+                f"{', '.join(asset.ips) or 'none resolved'}; probes: {probes or 'none'}",
+            )
+        for note in recon_result.notes:
+            scan_log.add("recon", note, level="warn")
 
         for asset in recon_result.assets:
             session.add(
@@ -492,6 +701,7 @@ async def run_scan(scan_id: str) -> None:
             )
             scan.is_degraded = True
             scan.degraded_reasons = [*scan.degraded_reasons, note]
+            scan_log.add("auth", note, level="warn")
             await _finish_phase(session, phase, status=PhaseStatus.SKIPPED, stats={"error": note})
         elif not configured_personas:
             note = (
@@ -500,6 +710,7 @@ async def run_scan(scan_id: str) -> None:
             )
             scan.is_degraded = True
             scan.degraded_reasons = [*scan.degraded_reasons, note]
+            scan_log.add("auth", note, level="warn")
             await _finish_phase(
                 session,
                 phase,
@@ -521,6 +732,7 @@ async def run_scan(scan_id: str) -> None:
                             settings=settings,
                             redis_client=redis_client,
                             browser=browser,
+                            scan_log=scan_log,
                         )
                     finally:
                         await browser.close()
@@ -558,6 +770,12 @@ async def run_scan(scan_id: str) -> None:
                     error="All configured logins failed; continuing anonymously.",
                 )
                 log.info("scan_runner.all_logins_failed_continuing", scan_id=scan_id)
+                scan_log.add(
+                    "auth",
+                    "No login worked: continuing as a logged-out visitor only. Checks that "
+                    "compare identities will have little to compare.",
+                    level="warn",
+                )
             else:
                 await _finish_phase(session, phase, status=PhaseStatus.COMPLETED, stats=auth_stats)
 
@@ -584,6 +802,7 @@ async def run_scan(scan_id: str) -> None:
                         browser=browser,
                         landing_pages=landing_pages,
                         options=scan.options,
+                        scan_log=scan_log,
                     )
                 finally:
                     await browser.close()
@@ -628,14 +847,72 @@ async def run_scan(scan_id: str) -> None:
         )
         await session.commit()
 
-        # --- Phase: PASSIVE_CHECKS (SKIPPED — M3 breadth work) ---
+        # --- Phase: PASSIVE_CHECKS (headers, cookies, CORS, exposed files, TLS) ---
         phase = await _get_or_create_phase(session, scan, ScanPhaseName.PASSIVE_CHECKS)
         machine.transition(ScanState.PASSIVE_CHECKS)
         scan.state = machine.current
         await _start_phase(session, phase)
-        scan.is_degraded = True
-        scan.degraded_reasons = [*scan.degraded_reasons, SKIPPED_PASSIVE_CHECKS_NOTE]
-        await _finish_phase(session, phase, status=PhaseStatus.SKIPPED, stats={})
+        await session.commit()
+
+        passive_findings: list[Finding] = []
+        passive_records: list[TranscriptRecord] = []
+        passive_stats: PassiveStats | None = None
+        passive_error: str | None = None
+        redis_client = Redis.from_url(settings.redis_url)
+        try:
+            passive_stats, passive_findings, passive_records = await _run_passive(
+                scan=scan,
+                target=target,
+                scope_rules=scope_rules,
+                surfaces=surfaces,
+                personas=personas,
+                in_memory_sessions=in_memory_sessions,
+                settings=settings,
+                redis_client=redis_client,
+                scan_log=scan_log,
+            )
+        except Exception as exc:  # noqa: BLE001 — passive checks must never fail the scan
+            log.error("scan_runner.passive_checks_crashed", scan_id=scan_id, exc_info=True)
+            passive_error = f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"
+        finally:
+            await redis_client.aclose()
+
+        if passive_stats is None:
+            note = f"Passive checks crashed and were skipped ({passive_error})."
+            scan_log.add("passive_checks", note, level="error")
+            scan.is_degraded = True
+            scan.degraded_reasons = [*scan.degraded_reasons, note]
+            await _finish_phase(
+                session, phase, status=PhaseStatus.FAILED, stats={}, error=passive_error
+            )
+        else:
+            # transcript_records first: Evidence.transcript_id has a real FK to them.
+            session.add_all(passive_records)
+            session.add_all(passive_findings)
+            await session.flush()
+            if passive_stats.failed:
+                failed_names = ", ".join(sorted(passive_stats.failed))
+                scan.is_degraded = True
+                scan.degraded_reasons = [
+                    *scan.degraded_reasons,
+                    f"These passive checks crashed and did not run: {failed_names}.",
+                ]
+            await _finish_phase(
+                session,
+                phase,
+                status=PhaseStatus.COMPLETED,
+                stats={
+                    "hosts_checked": len(passive_stats.origins),
+                    "requests": passive_stats.requests,
+                    "findings": passive_stats.candidates,
+                    "confirmed": passive_stats.confirmed,
+                    "probable": passive_stats.probable,
+                    **{
+                        f"found_by_{k.replace(' ', '_')}": v
+                        for k, v in passive_stats.per_check.items()
+                    },
+                },
+            )
 
         machine.transition(ScanState.TESTING)
         scan.state = machine.current
@@ -657,6 +934,7 @@ async def run_scan(scan_id: str) -> None:
                 in_memory_sessions=in_memory_sessions,
                 settings=settings,
                 redis_client=redis_client,
+                scan_log=scan_log,
             )
         finally:
             await redis_client.aclose()
@@ -716,9 +994,12 @@ async def run_scan(scan_id: str) -> None:
             phase,
             status=PhaseStatus.COMPLETED,
             stats={
-                "candidates_verified": access_control_stats.candidates_found,
-                "confirmed": access_control_stats.confirmed,
-                "probable": access_control_stats.probable,
+                "candidates_verified": access_control_stats.candidates_found
+                + (passive_stats.candidates if passive_stats else 0),
+                "confirmed": access_control_stats.confirmed
+                + (passive_stats.confirmed if passive_stats else 0),
+                "probable": access_control_stats.probable
+                + (passive_stats.probable if passive_stats else 0),
             },
         )
         await session.commit()
@@ -736,7 +1017,7 @@ async def run_scan(scan_id: str) -> None:
             session,
             phase,
             status=PhaseStatus.COMPLETED,
-            stats={"findings_triaged": len(findings)},
+            stats={"findings_triaged": len(findings) + len(passive_findings)},
         )
         await session.commit()
 
@@ -773,14 +1054,30 @@ async def run_scan(scan_id: str) -> None:
         scan.finished_at = datetime.now(UTC)
         await session.commit()
 
+        confirmed_total = access_control_stats.confirmed + (
+            passive_stats.confirmed if passive_stats else 0
+        )
+        scan_log.add(
+            "scan",
+            f"Scan complete: {len(findings) + len(passive_findings)} finding(s) "
+            f"({confirmed_total} confirmed by re-checking); "
+            f"{total_created} endpoint(s) recorded; "
+            + (
+                "some checks were skipped (see the coverage card)."
+                if scan.is_degraded
+                else "all checks ran."
+            ),
+        )
         log.info(
             "scan_runner.completed",
             scan_id=scan_id,
             assets_found=len(recon_result.assets),
             personas_crawled=len(surfaces),
             endpoints_created=total_created,
-            findings_confirmed=access_control_stats.confirmed,
-            findings_probable=access_control_stats.probable,
+            findings_confirmed=access_control_stats.confirmed
+            + (passive_stats.confirmed if passive_stats else 0),
+            findings_probable=access_control_stats.probable
+            + (passive_stats.probable if passive_stats else 0),
             report_id=str(report_row.id),
         )
 
@@ -821,8 +1118,11 @@ async def mark_scan_failed(scan_id: str, reason: str) -> bool:
         where = f" during {running.replace('_', ' ')}" if running else ""
         _close_scan_as_failed(scan, f"The scan stopped{where}: {reason}")
         await session.commit()
-        log.info("scan_runner.marked_failed", scan_id=scan_id, phase=running)
-        return True
+    scan_log = await ScanLog.resume(uuid.UUID(scan_id))
+    scan_log.add("scan", f"The scan stopped{where}: {reason}", level="error")
+    await scan_log.flush()
+    log.info("scan_runner.marked_failed", scan_id=scan_id, phase=running)
+    return True
 
 
 async def fail_interrupted_scans() -> int:
@@ -838,13 +1138,18 @@ async def fail_interrupted_scans() -> int:
             .options(selectinload(Scan.phases))
         )
         scans = list(result.scalars().all())
+        message = (
+            "The scan was interrupted: the scan worker restarted while it was running "
+            "(a deploy, a crash or running out of memory). Use Retry to run it again."
+        )
         for scan in scans:
-            _close_scan_as_failed(
-                scan,
-                "The scan was interrupted: the scan worker restarted while it was running "
-                "(a deploy, a crash or running out of memory). Use Retry to run it again.",
-            )
+            _close_scan_as_failed(scan, message)
         await session.commit()
-        if scans:
-            log.warning("scan_runner.failed_interrupted_scans", count=len(scans))
-        return len(scans)
+        ids = [scan.id for scan in scans]
+    for scan_id in ids:
+        scan_log = await ScanLog.resume(scan_id)
+        scan_log.add("scan", message, level="error")
+        await scan_log.flush()
+    if ids:
+        log.warning("scan_runner.failed_interrupted_scans", count=len(ids))
+    return len(ids)
