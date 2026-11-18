@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sentinel_core.state_machine import PhaseStatus, ScanPhaseName, ScanState
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -50,6 +50,9 @@ class Scan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     fail_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     is_degraded: Mapped[bool] = mapped_column(Boolean, default=False)
     degraded_reasons: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    # Chosen at Run scan: {"speed": "gentle|normal|fast", "depth": "quick|standard|deep"}.
+    # See sentinel_core.scan_options for what each means.
+    options: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

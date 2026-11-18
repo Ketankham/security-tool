@@ -40,8 +40,13 @@ def build_http_engine(
     settings: Settings,
     target_id: str,
     scan_id: str,
+    requests_per_second: float | None = None,
 ) -> HttpEngine:
-    rate_limiter = RateLimiter(redis_client)
+    rate_limiter = (
+        RateLimiter(redis_client, default_rate_per_sec=requests_per_second)
+        if requests_per_second
+        else RateLimiter(redis_client)
+    )
     recorder = TranscriptRecorder(LocalTranscriptStore(settings.storage_local_path))
     return HttpEngine(
         scope_guard=scope_guard,

@@ -72,6 +72,26 @@ function OrgPicker({ onDone }: { onDone: (id: string) => void }) {
     onDone(id);
   }
 
+  async function removeOrg(o: OrganizationSummary) {
+    const typed = window.prompt(
+      `Delete "${o.name}" with its ${o.target_count} target(s), their logins and all scans? ` +
+        `This can't be undone.\n\nType the organization name to confirm:`,
+    );
+    if (typed === null) return;
+    if (typed.trim() !== o.name) {
+      setError("The name didn't match, so nothing was deleted.");
+      return;
+    }
+    try {
+      await api.deleteOrg(o.id);
+      if (getOrgId() === o.id) clearOrgId();
+      setOrgs((list) => (list ?? []).filter((x) => x.id !== o.id));
+      setError(null);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.detail : String(e));
+    }
+  }
+
   useEffect(() => {
     api
       .listOrgs()
@@ -97,12 +117,12 @@ function OrgPicker({ onDone }: { onDone: (id: string) => void }) {
       {orgs && orgs.length > 0 && (
         <div className="list" style={{ margin: "10px 0" }}>
           {orgs.map((o) => (
+            <div key={o.id} style={{ display: "flex", gap: 6, alignItems: "stretch" }}>
             <button
-              key={o.id}
               type="button"
               className="list-item"
               onClick={() => choose(o.id)}
-              style={{ width: "100%", textAlign: "left", cursor: "pointer" }}
+              style={{ flex: 1, textAlign: "left", cursor: "pointer" }}
             >
               <div className="grow">
                 <div className="title">{o.name}</div>
@@ -114,6 +134,16 @@ function OrgPicker({ onDone }: { onDone: (id: string) => void }) {
               </div>
               <span className="hint">Open →</span>
             </button>
+            <button
+              type="button"
+              className="btn-sm"
+              title={`Delete ${o.name}`}
+              aria-label={`Delete ${o.name}`}
+              onClick={() => removeOrg(o)}
+            >
+              Delete
+            </button>
+            </div>
           ))}
         </div>
       )}

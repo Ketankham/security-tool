@@ -26,7 +26,9 @@ from ..schemas.target import (
     ScopeRuleOut,
     TargetCreate,
     TargetOut,
+    TargetUpdate,
 )
+from ..services.deletion import delete_targets, refuse_if_scanning
 from ..services.ownership import generate_verification_token, verify_ownership
 
 router = APIRouter(tags=["targets"])
@@ -91,6 +93,38 @@ async def list_targets(
 @router.get("/targets/{target_id}", response_model=TargetOut)
 async def get_target(target: Target = Depends(get_owned_target)) -> TargetOut:
     return target_out(target)
+
+
+@router.patch("/targets/{target_id}", response_model=TargetOut)
+async def update_target(
+    payload: TargetUpdate,
+    target: Target = Depends(get_owned_target),
+    session: AsyncSession = Depends(get_session),
+) -> TargetOut:
+    if payload.display_name is not None:
+        target.display_name = payload.display_name
+    if payload.root_domain is not None and payload.root_domain != target.root_domain:
+        await refuse_if_scanning(session, [target.id])
+        target.root_domain = payload.root_domain
+        # Ownership proof was for the old domain.
+        target.ownership_verified = False
+        target.ownership_verified_at = None
+        target.ownership_verification_method = None
+    await session.commit()
+    await session.refresh(target)
+    return target_out(target)
+
+
+@router.delete("/targets/{target_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_target(
+    target: Target = Depends(get_owned_target),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    """Deletes the target with its personas (and their stored secrets),
+    scope rules and scans."""
+    await refuse_if_scanning(session, [target.id])
+    await delete_targets(session, [target.id])
+    await session.commit()
 
 
 @router.post("/targets/{target_id}/ownership-challenge", response_model=OwnershipChallengeOut)

@@ -272,6 +272,38 @@ export function validateLogin(f: LoginForm, passwordRequired: boolean, rootDomai
   return errors;
 }
 
+/** QA #39: problems that make the login unsafe to save at all (a non-http
+ * URL, or a page off the target that wasn't confirmed). Save stays disabled
+ * while this returns a message, instead of waiting for a click. */
+export function blockingLoginProblem(f: LoginForm, rootDomain: string): string | null {
+  if (f.method !== "form") {
+    const url = f.loginUrl.trim();
+    if (!url) return null;
+    const err = urlProblem(url, "page to check");
+    if (err) return err;
+    const host = hostOf(url);
+    return host && !onTarget(host, rootDomain)
+      ? `A pasted session is only ever sent to ${rootDomain}: use a page on it.`
+      : null;
+  }
+  let candidate: { start_url?: unknown; steps?: unknown } | null = null;
+  if (f.advanced) {
+    candidate = parseJson(f).recipe ?? null;
+    if (candidate) {
+      const err = urlProblem(String(candidate.start_url ?? ""));
+      if (err) return err;
+    }
+  } else if (f.loginUrl.trim()) {
+    const err = urlProblem(f.loginUrl);
+    if (err) return err;
+    candidate = { start_url: f.loginUrl.trim(), steps: [] };
+  }
+  if (candidate && offDomainHosts(candidate, rootDomain).length > 0 && !f.allowOffDomain) {
+    return "This login opens a page off the target: confirm the other domain below first.";
+  }
+  return null;
+}
+
 export function buildLogin(f: LoginForm, passwordRequired: boolean, rootDomain: string): BuiltLogin {
   const errors = validateLogin(f, passwordRequired, rootDomain);
   if (Object.keys(errors).length > 0) return { ok: false, errors };

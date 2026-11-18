@@ -15,6 +15,7 @@ links, because that's how new pages get discovered at all.
 
 from __future__ import annotations
 
+import contextlib
 from typing import cast
 from urllib.parse import urlsplit
 
@@ -59,7 +60,11 @@ class PersonaCrawler:
         root_url: str,
         persona_id: str,
         storage_state: dict | None = None,
+        seeds: list[str] | None = None,
     ) -> SurfaceMap:
+        """``seeds``: extra start pages queued after ``root_url``, e.g. the
+        page a persona's login landed on (/dashboard). Out-of-scope seeds
+        are skipped like any other URL."""
         # Playwright's storage_state param is typed as its own StorageState
         # TypedDict; a persona's session state is stored/passed around as a
         # plain dict elsewhere in the system (see sentinel_auth.replay), so
@@ -76,12 +81,23 @@ class PersonaCrawler:
         surface = SurfaceMap(root_url=root_url, persona_id=persona_id)
         seen_templates: set[tuple[str, str]] = set()  # (method, path_template) already recorded
         visited: set[str] = set()
-        queue: list[str] = [root_url]
+        queue: list[str] = [root_url, *[u for u in (seeds or []) if u != root_url]]
+        # Hosts whose links are followed. Starts as the root URL's host; when
+        # the site redirects (abhyaasika.com -> www.abhyaasika.com, QA #37)
+        # the in-scope host it landed on is added, otherwise every link on
+        # the real site looks "foreign" and the crawl stops after one page.
+        site_hosts: set[str] = {urlsplit(root_url).netloc}
+        for seed in seeds or []:
+            self._adopt_host(seed, site_hosts)
 
-        page.on(
-            "request",
-            lambda req: self._record_network_request(req, persona_id, surface, seen_templates),
-        )
+        def watch(p: Page) -> Page:
+            p.on(
+                "request",
+                lambda req: self._record_network_request(req, persona_id, surface, seen_templates),
+            )
+            return p
+
+        watch(page)
 
         try:
             while queue and len(visited) < self._max_pages:
@@ -104,14 +120,25 @@ class PersonaCrawler:
                 try:
                     await page.goto(url, timeout=self._page_timeout_s * 1000)
                 except Exception as exc:  # noqa: BLE001 — a dead/slow link shouldn't kill the crawl
-                    surface.notes.append(f"Failed to load {url}: {exc}")
+                    surface.notes.append(f"Failed to load {url}: {str(exc).splitlines()[0]}")
+                    # A failed load leaves the tab on a still-settling error
+                    # page, and the next goto is then "interrupted by another
+                    # navigation": one dead link used to sink every page after
+                    # it. Carry on in a fresh tab.
+                    with contextlib.suppress(Exception):
+                        await page.close()
+                    page = watch(await context.new_page())
                     continue
 
                 visited.add(url)
+                landed = page.url
+                if landed and landed != url:
+                    visited.add(landed)
+                    self._adopt_host(landed, site_hosts)
                 self._record_endpoint("GET", url, "link", persona_id, surface, seen_templates)
 
-                links = await self._extract_same_origin_links(page, root_url)
-                forms = await self._extract_forms(page, root_url)
+                links = await self._extract_same_origin_links(page, site_hosts)
+                forms = await self._extract_forms(page, root_url, site_hosts)
 
                 for method, form_url in forms:
                     self._record_endpoint(
@@ -176,8 +203,14 @@ class PersonaCrawler:
             )
         )
 
-    async def _extract_same_origin_links(self, page: Page, root_url: str) -> list[str]:
-        root_origin = urlsplit(root_url)
+    def _adopt_host(self, url: str, site_hosts: set[str]) -> None:
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            return
+        if self._scope_guard.evaluate(method="GET", url=url).allowed:
+            site_hosts.add(parts.netloc)
+
+    async def _extract_same_origin_links(self, page: Page, site_hosts: set[str]) -> list[str]:
         try:
             hrefs: list[str] = await page.eval_on_selector_all(
                 "a[href]", "els => els.map(e => e.href)"
@@ -190,13 +223,14 @@ class PersonaCrawler:
             parts = urlsplit(href)
             if parts.scheme not in ("http", "https"):
                 continue
-            if parts.netloc != root_origin.netloc:
+            if parts.netloc not in site_hosts:
                 continue
             same_origin.append(href.split("#", 1)[0])  # drop in-page fragments
         return same_origin
 
-    async def _extract_forms(self, page: Page, root_url: str) -> list[tuple[str, str]]:
-        root_origin = urlsplit(root_url)
+    async def _extract_forms(
+        self, page: Page, root_url: str, site_hosts: set[str]
+    ) -> list[tuple[str, str]]:
         try:
             raw_forms: list[dict] = await page.eval_on_selector_all(
                 "form",
@@ -211,7 +245,7 @@ class PersonaCrawler:
         for form in raw_forms:
             action = form.get("action") or root_url
             parts = urlsplit(action)
-            if parts.netloc and parts.netloc != root_origin.netloc:
+            if parts.netloc and parts.netloc not in site_hosts:
                 continue
             forms.append((form.get("method", "GET"), action))
         return forms

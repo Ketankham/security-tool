@@ -29,6 +29,7 @@ from ..schemas.persona import (
     PersonaOut,
     normalize_secret,
 )
+from ..services.deletion import delete_personas, refuse_if_scanning
 
 router = APIRouter(tags=["personas"])
 
@@ -108,13 +109,41 @@ async def update_persona_login(
     session: AsyncSession = Depends(get_session),
     crypto: EnvelopeCrypto = Depends(get_crypto),
 ) -> Persona:
-    """Set or replace a persona's login recipe and/or password."""
+    """Edit a persona's details and/or set or replace its login."""
     persona = await session.get(Persona, persona_id)
     # Same 404 for "doesn't exist" and "belongs to another target/org", so
     # persona ids can't be probed across orgs (get_owned_target already
     # scoped the target to the caller's org).
     if persona is None or persona.target_id != target.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Persona not found.")
+
+    fields = payload.model_fields_set
+    if payload.label is not None and payload.label.lower() != persona.label.lower():
+        clash = await session.execute(
+            select(Persona.id).where(
+                Persona.target_id == target.id,
+                func.lower(Persona.label) == payload.label.lower(),
+                Persona.id != persona.id,
+            )
+        )
+        if clash.first() is not None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, f"A persona named '{payload.label}' already exists."
+            )
+    if payload.label is not None:
+        persona.label = payload.label
+    if payload.role_name is not None:
+        persona.role_name = payload.role_name
+    if payload.trust_rank is not None:
+        persona.trust_rank = payload.trust_rank
+    if "tenant_key" in fields:
+        persona.tenant_key = payload.tenant_key or None
+
+    if payload.login_recipe is None and payload.credential is None:
+        # Details only: the login and its last verdict are untouched.
+        await session.commit()
+        await session.refresh(persona)
+        return persona
 
     stored_strategy = _strategy_of(persona.login_recipe)
     new_strategy = payload.login_recipe.strategy if payload.login_recipe else stored_strategy
@@ -174,6 +203,22 @@ async def update_persona_login(
     await session.commit()
     await session.refresh(persona)
     return persona
+
+
+@router.delete("/targets/{target_id}/personas/{persona_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_persona(
+    persona_id: UUID,
+    target: Target = Depends(get_owned_target),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    """Deletes the persona and its stored secret. Old scans keep their
+    transcripts; they just no longer name this persona."""
+    persona = await session.get(Persona, persona_id)
+    if persona is None or persona.target_id != target.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Persona not found.")
+    await refuse_if_scanning(session, [target.id])
+    await delete_personas(session, [persona.id])
+    await session.commit()
 
 
 def _strategy_of(recipe: dict | None) -> str:

@@ -35,6 +35,7 @@ import structlog
 from playwright.async_api import Browser, async_playwright
 from redis.asyncio import Redis
 from sentinel_auth.browser import chromium_launch_kwargs
+from sentinel_core import scan_options as scan_options_mod
 from sentinel_core.crypto import EnvelopeCrypto, LocalMasterKeyProvider
 from sentinel_core.rate_limiter import RateLimiter
 from sentinel_core.state_machine import (
@@ -144,7 +145,13 @@ async def _run_auth_establishing(
     DNS/TLS and have no notion of a docker-compose-style port mapping —
     see tests/benchmark/README.md for the same gap in recon.
     """
-    auth_stats: dict = {"personas_configured": len(configured_personas), "personas_available": 0}
+    auth_stats: dict = {
+        "personas_configured": len(configured_personas),
+        "personas_available": 0,
+        # persona id -> the page its login landed on; seeds that persona's
+        # crawl (QA #37: a crawl from the home page alone found 1 page).
+        "landing_pages": {},
+    }
     in_memory_sessions: dict[str, dict] = {}
 
     if not configured_personas:
@@ -159,8 +166,9 @@ async def _run_auth_establishing(
         settings=settings,
         target_id=str(target.id),
         scan_id=str(scan.id),
+        requests_per_second=scan_options_mod.resolve(scan.options)[0],
     )
-    probe_url = oracle_probe_url or f"https://{target.root_domain}/"
+    probe_url = oracle_probe_url or f"https://{target.root_domain}/"  # fallback probe
 
     try:
         for persona in configured_personas:
@@ -191,6 +199,8 @@ async def _run_auth_establishing(
                 continue
 
             auth_stats["personas_available"] += 1
+            if result.final_url:
+                auth_stats["landing_pages"][str(persona.id)] = result.final_url
             in_memory_sessions[str(persona.id)] = result.storage_state or {}
             persona.session_state_ciphertext = crypto.encrypt(
                 org_data_key, json.dumps(result.storage_state).encode()
@@ -227,18 +237,37 @@ async def _run_crawling(
     redis_client: Redis,
     browser: Browser,
     root_url: str | None = None,
+    landing_pages: dict[str, str] | None = None,
+    options: dict | None = None,
 ) -> list[SurfaceMap]:
     """``root_url`` defaults to the target's own root URL; tests pass an
     explicit one — see _run_auth_establishing's docstring for why."""
     scope_guard = build_scope_guard(target, scope_rules)
-    rate_limiter = RateLimiter(redis_client)
+    requests_per_second, max_pages = scan_options_mod.resolve(options)
+    rate_limiter = RateLimiter(redis_client, default_rate_per_sec=requests_per_second)
     crawler = PersonaCrawler(
-        scope_guard=scope_guard, rate_limiter=rate_limiter, target_id=str(target.id)
+        scope_guard=scope_guard,
+        rate_limiter=rate_limiter,
+        target_id=str(target.id),
+        max_pages=max_pages,
     )
     effective_root_url = root_url or f"https://{target.root_domain}/"
 
+    landing_pages = landing_pages or {}
+    # The anonymous visitor also starts from each login page and each
+    # persona's landing page: what a logged-out visitor gets there is part
+    # of the surface (and of the logged-in vs logged-out comparison).
+    anon_seeds = [
+        *(p.login_recipe.get("start_url") for p in configured_personas if p.login_recipe),
+        *landing_pages.values(),
+    ]
     surfaces: list[SurfaceMap] = [
-        await crawler.crawl(browser, root_url=effective_root_url, persona_id="anonymous")
+        await crawler.crawl(
+            browser,
+            root_url=effective_root_url,
+            persona_id="anonymous",
+            seeds=[u for u in anon_seeds if u],
+        )
     ]
     for persona in configured_personas:
         storage_state = in_memory_sessions.get(str(persona.id))
@@ -250,6 +279,9 @@ async def _run_crawling(
                 root_url=effective_root_url,
                 persona_id=str(persona.id),
                 storage_state=storage_state,
+                seeds=[landing_pages[str(persona.id)]]
+                if str(persona.id) in landing_pages
+                else None,
             )
         )
     return surfaces
@@ -276,6 +308,7 @@ async def _run_access_control(
         settings=settings,
         target_id=str(target.id),
         scan_id=str(scan.id),
+        requests_per_second=scan_options_mod.resolve(scan.options)[0],
     )
     try:
         return await run_access_control_and_verify(
@@ -450,6 +483,7 @@ async def run_scan(scan_id: str) -> None:
         await session.commit()
 
         in_memory_sessions: dict[str, dict] = {}
+        landing_pages: dict[str, str] = {}
 
         if not settings.kms_master_key and configured_personas:
             note = (
@@ -493,6 +527,7 @@ async def run_scan(scan_id: str) -> None:
             finally:
                 await redis_client.aclose()
 
+            landing_pages = auth_stats.get("landing_pages", {})
             failed = [p for p in configured_personas if not p.is_available]
             for persona in failed:
                 scan.is_degraded = True
@@ -547,6 +582,8 @@ async def run_scan(scan_id: str) -> None:
                         in_memory_sessions=in_memory_sessions,
                         redis_client=redis_client,
                         browser=browser,
+                        landing_pages=landing_pages,
+                        options=scan.options,
                     )
                 finally:
                     await browser.close()

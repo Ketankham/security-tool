@@ -177,17 +177,28 @@ class PersonaCreate(BaseModel):
 
 
 class PersonaLoginUpdate(BaseModel):
-    """Set or replace an existing persona's login. Personas can't be deleted
-    (transcripts reference them), so this is how a persona created without a
-    recipe — or with a wrong one, or a changed password — gets fixed."""
+    """Edit a persona: its name/role/rank/tenant, and/or set or replace its
+    login. A persona created without a recipe — or with a wrong one, or a
+    changed password — gets fixed here."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
 
     login_recipe: LoginRecipeIn | None = None
     credential: CredentialCreate | None = None
+    label: str | None = Field(default=None, min_length=1, max_length=200)
+    role_name: str | None = Field(default=None, min_length=1, max_length=100)
+    trust_rank: int | None = Field(default=None, ge=0, le=1000)
+    tenant_key: str | None = Field(default=None, max_length=200)
 
     @model_validator(mode="after")
     def _something_to_change(self) -> PersonaLoginUpdate:
-        if self.login_recipe is None and self.credential is None:
-            raise ValueError("provide login_recipe and/or credential")
+        if not self.model_fields_set - {"credential", "login_recipe"} and (
+            self.login_recipe is None and self.credential is None
+        ):
+            raise ValueError(
+                "provide login_recipe and/or credential, or a field to edit "
+                "(label, role_name, trust_rank, tenant_key)"
+            )
         return self
 
 

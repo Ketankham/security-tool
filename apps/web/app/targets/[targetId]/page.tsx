@@ -6,9 +6,11 @@ import { use, useEffect, useState } from "react";
 import { OrgGate } from "../../OrgGate";
 import { ApiError, api } from "@/lib/api";
 import { usePoll } from "@/lib/usePoll";
-import { STATE_LABEL, isFailureState, isTerminal } from "@/lib/scan";
+import { scanStatus } from "@/lib/scan";
 import type {
   LoginTestResult,
+  ScanDepth,
+  ScanSpeed,
   OwnershipChallenge,
   OwnershipMethod,
   Persona,
@@ -19,6 +21,7 @@ import type {
 import {
   EMPTY_LOGIN,
   LoginRecipeFields,
+  blockingLoginProblem,
   buildLogin,
   loginFormFromRecipe,
   type LoginForm,
@@ -55,8 +58,7 @@ function TargetDetail({ targetId }: { targetId: string }) {
       ) : (
         <>
           {error && <div className="error-box">{error}</div>}
-          <h1>{target.display_name}</h1>
-          <p className="card-muted mono">{target.root_domain}</p>
+          <TargetHeader target={target} onChange={refresh} />
 
           {/* Hidden when this deployment doesn't require ownership checks. */}
           {target.ownership_check_required && (
@@ -68,6 +70,111 @@ function TargetDetail({ targetId }: { targetId: string }) {
         </>
       )}
     </>
+  );
+}
+
+// Edit a target's name / domain, or delete it (QA "can't edit or delete").
+// Changing the domain is the fix for QA #37: abhyaasika.com -> www.abhyaasika.com.
+function TargetHeader({ target, onChange }: { target: Target; onChange: () => void }) {
+  const router = useRouter();
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(target.display_name);
+  const [domain, setDomain] = useState(target.root_domain);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.updateTarget(target.id, { display_name: name.trim(), root_domain: domain.trim() });
+      setEditing(false);
+      onChange();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    const typed = window.prompt(
+      `Delete ${target.root_domain} with its personas (and their stored logins), scope rules and all scans? This can't be undone.\n\nType the domain to confirm:`,
+    );
+    if (typed === null) return;
+    if (typed.trim().toLowerCase() !== target.root_domain) {
+      setError("The domain didn't match, so nothing was deleted.");
+      return;
+    }
+    try {
+      await api.deleteTarget(target.id);
+      router.push("/");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : String(err));
+    }
+  }
+
+  if (!editing) {
+    return (
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <div style={{ flex: 1 }}>
+          <h1>{target.display_name}</h1>
+          <p className="card-muted mono">{target.root_domain}</p>
+          {error && <div className="error-box">{error}</div>}
+        </div>
+        <button
+          className="btn-sm"
+          style={{ marginTop: 18 }}
+          onClick={() => {
+            setName(target.display_name);
+            setDomain(target.root_domain);
+            setEditing(true);
+          }}
+        >
+          Edit
+        </button>
+        <button className="btn-sm" style={{ marginTop: 18 }} onClick={remove}>
+          Delete
+        </button>
+      </div>
+    );
+  }
+  return (
+    <form className="card" onSubmit={save}>
+      {error && <div className="error-box" style={{ marginBottom: 8 }}>{error}</div>}
+      <div className="row">
+        <div>
+          <label>Name</label>
+          <input value={name} maxLength={200} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div>
+          <label>Domain</label>
+          <input className="mono" value={domain} onChange={(e) => setDomain(e.target.value)} />
+        </div>
+      </div>
+      <div className="hint" style={{ marginTop: 4 }}>
+        Use the host the app actually runs on, e.g. <span className="mono">www.abhyaasika.com</span>{" "}
+        if <span className="mono">abhyaasika.com</span> just redirects there. Subdomains of it are in
+        scope too.
+      </div>
+      <div className="row" style={{ marginTop: 10 }}>
+        <button className="btn-primary" type="submit" disabled={busy || !name.trim() || !domain.trim()}>
+          {busy ? "Saving…" : "Save"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setEditing(false);
+            setName(target.display_name);
+            setDomain(target.root_domain);
+            setError(null);
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -339,6 +446,19 @@ function PersonasCard({ targetId, rootDomain }: { targetId: string; rootDomain: 
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
+  const [details, setDetails] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<string | null>(null);
+
+  async function removePersona(p: Persona) {
+    if (!window.confirm(`Delete persona "${p.label}" and its stored login? Old scans are kept.`)) return;
+    try {
+      await api.deletePersona(targetId, p.id);
+      setRowError(null);
+      refresh();
+    } catch (e) {
+      setRowError(e instanceof ApiError ? e.detail : String(e));
+    }
+  }
 
   return (
     <div className="card">
@@ -349,6 +469,7 @@ function PersonasCard({ targetId, rootDomain }: { targetId: string; rootDomain: 
         other identity to find who can reach what they shouldn&apos;t.
       </p>
       {error && <div className="error-box">{error}</div>}
+      {rowError && <div className="error-box">{rowError}</div>}
 
       {personas && personas.length > 0 && (
         <div className="list" style={{ margin: "10px 0" }}>
@@ -392,7 +513,26 @@ function PersonasCard({ targetId, rootDomain }: { targetId: string; rootDomain: 
                 >
                   {editing === p.id ? "Close" : p.has_login_recipe ? "Edit login" : "Set up login"}
                 </button>
+                <button
+                  className="btn-sm"
+                  onClick={() => setDetails(details === p.id ? null : p.id)}
+                >
+                  {details === p.id ? "Close" : "Details"}
+                </button>
+                <button className="btn-sm" onClick={() => removePersona(p)}>
+                  Delete
+                </button>
               </div>
+              {details === p.id && (
+                <PersonaDetails
+                  targetId={targetId}
+                  persona={p}
+                  onDone={() => {
+                    setDetails(null);
+                    refresh();
+                  }}
+                />
+              )}
               {testing === p.id && (
                 <LoginTest targetId={targetId} persona={p} onFinished={refresh} />
               )}
@@ -423,6 +563,80 @@ function PersonasCard({ targetId, rootDomain }: { targetId: string; rootDomain: 
         <button onClick={() => setOpen(true)}>+ Add persona</button>
       )}
     </div>
+  );
+}
+
+function PersonaDetails({
+  targetId,
+  persona,
+  onDone,
+}: {
+  targetId: string;
+  persona: Persona;
+  onDone: () => void;
+}) {
+  const [label, setLabel] = useState(persona.label);
+  const [role, setRole] = useState(persona.role_name);
+  const [trust, setTrust] = useState(persona.trust_rank);
+  const [tenant, setTenant] = useState(persona.tenant_key ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.updatePersonaLogin(targetId, persona.id, {
+        label: label.trim(),
+        role_name: role.trim(),
+        trust_rank: trust,
+        tenant_key: tenant.trim() || null,
+      });
+      onDone();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form
+      onSubmit={save}
+      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, margin: "6px 0 10px" }}
+    >
+      {error && <div className="error-box" style={{ marginBottom: 8 }}>{error}</div>}
+      <div className="row">
+        <div>
+          <label>Label</label>
+          <input value={label} maxLength={200} onChange={(e) => setLabel(e.target.value)} />
+        </div>
+        <div>
+          <label>Role name</label>
+          <input value={role} maxLength={100} onChange={(e) => setRole(e.target.value)} />
+        </div>
+        <div style={{ maxWidth: 140 }}>
+          <label>Trust rank</label>
+          <input
+            type="number"
+            min={0}
+            max={1000}
+            value={trust}
+            onChange={(e) => setTrust(Math.max(0, Math.min(1000, Math.trunc(Number(e.target.value) || 0))))}
+          />
+        </div>
+        <div>
+          <label>Tenant key</label>
+          <input value={tenant} maxLength={200} onChange={(e) => setTenant(e.target.value)} />
+        </div>
+      </div>
+      <div className="row" style={{ marginTop: 10 }}>
+        <button className="btn-primary" type="submit" disabled={busy || !label.trim() || !role.trim()}>
+          {busy ? "Saving…" : "Save details"}
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -648,7 +862,12 @@ function EditLogin({
             passwordHint={hasPassword ? "leave blank to keep current" : undefined}
           />
           <div className="row" style={{ marginTop: 12 }}>
-            <button className="btn-primary" type="submit" disabled={busy}>
+            <button
+              className="btn-primary"
+              type="submit"
+              disabled={busy || !!blockingLoginProblem(login, rootDomain)}
+              title={blockingLoginProblem(login, rootDomain) ?? undefined}
+            >
               {busy ? "Saving…" : "Save login"}
             </button>
           </div>
@@ -777,7 +996,12 @@ function AddPersona({
         </div>
       )}
       <div className="row" style={{ marginTop: 12 }}>
-        <button className="btn-primary" type="submit" disabled={busy}>
+        <button
+          className="btn-primary"
+          type="submit"
+          disabled={busy || (withLogin && !!blockingLoginProblem(login, rootDomain))}
+          title={(withLogin && blockingLoginProblem(login, rootDomain)) || undefined}
+        >
           {busy ? "Saving…" : "Save persona"}
         </button>
         <button type="button" onClick={onCancel}>Cancel</button>
@@ -794,12 +1018,17 @@ function ScansCard({ target }: { target: Target }) {
   );
   const [busy, setBusy] = useState(false);
   const [startErr, setStartErr] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [speed, setSpeed] = useState<ScanSpeed>("normal");
+  const [depth, setDepth] = useState<ScanDepth>("standard");
+  const { data: personas } = usePoll<Persona[]>(() => api.listPersonas(target.id), 30000);
+  const { data: rules } = usePoll<ScopeRule[]>(() => api.listScopeRules(target.id), 30000);
 
   async function run() {
     setBusy(true);
     setStartErr(null);
     try {
-      const scan = await api.createScan(target.id);
+      const scan = await api.createScan(target.id, { speed, depth });
       router.push(`/scans/${scan.id}`);
     } catch (e) {
       setStartErr(e instanceof ApiError ? e.detail : String(e));
@@ -815,9 +1044,28 @@ function ScansCard({ target }: { target: Target }) {
       {startErr && <div className="error-box" style={{ marginBottom: 8 }}>{startErr}</div>}
 
       <div style={{ margin: "8px 0 14px" }}>
-        <button className="btn-primary" disabled={busy || !target.is_scannable} onClick={run}>
-          {busy ? "Starting…" : "Run scan"}
-        </button>
+        {!confirming ? (
+          <button
+            className="btn-primary"
+            disabled={busy || !target.is_scannable}
+            onClick={() => setConfirming(true)}
+          >
+            Run scan…
+          </button>
+        ) : (
+          <RunScanPanel
+            target={target}
+            personas={personas ?? []}
+            rules={rules ?? []}
+            speed={speed}
+            depth={depth}
+            setSpeed={setSpeed}
+            setDepth={setDepth}
+            busy={busy}
+            onStart={run}
+            onCancel={() => setConfirming(false)}
+          />
+        )}
         {!target.is_scannable && (
           <div className="hint" style={{ marginTop: 6 }}>
             Complete both ownership steps above first.
@@ -842,7 +1090,7 @@ function ScansCard({ target }: { target: Target }) {
                     <div className="sub" style={{ color: "var(--bad)" }}>{s.fail_reason}</div>
                   )}
                 </div>
-                <ScanStateBadge state={s.state} />
+                <ScanStateBadge scan={s} />
               </Link>
             ))}
         </div>
@@ -851,7 +1099,83 @@ function ScansCard({ target }: { target: Target }) {
   );
 }
 
-function ScanStateBadge({ state }: { state: Scan["state"] }) {
-  const tone = isFailureState(state) ? "bad" : state === "complete" ? "ok" : isTerminal(state) ? "muted" : "running";
-  return <span className={`badge tone-${tone}`}>{STATE_LABEL[state]}</span>;
+const SPEEDS: { value: ScanSpeed; label: string; hint: string }[] = [
+  { value: "gentle", label: "Gentle", hint: "2 requests/second — small or fragile sites" },
+  { value: "normal", label: "Normal", hint: "5 requests/second" },
+  { value: "fast", label: "Fast", hint: "10 requests/second — sturdy sites only" },
+];
+const DEPTHS: { value: ScanDepth; label: string; pages: number }[] = [
+  { value: "quick", label: "Quick", pages: 30 },
+  { value: "standard", label: "Standard", pages: 100 },
+  { value: "deep", label: "Deep", pages: 300 },
+];
+
+// Run scan asks before starting: how hard to hit the site, how far to go,
+// and a one-line summary of what will happen.
+function RunScanPanel(props: {
+  target: Target;
+  personas: Persona[];
+  rules: ScopeRule[];
+  speed: ScanSpeed;
+  depth: ScanDepth;
+  setSpeed: (s: ScanSpeed) => void;
+  setDepth: (d: ScanDepth) => void;
+  busy: boolean;
+  onStart: () => void;
+  onCancel: () => void;
+}) {
+  const { target, personas, rules, speed, depth } = props;
+  const logins = personas.filter((p) => p.has_login_recipe);
+  const failing = logins.filter((p) => !p.is_available);
+  const excluded = rules.filter((r) => r.effect === "exclude");
+  const pages = DEPTHS.find((d) => d.value === depth)!.pages;
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12 }}>
+      <div className="row">
+        <div>
+          <label>Speed</label>
+          <select value={speed} onChange={(e) => props.setSpeed(e.target.value as ScanSpeed)} aria-label="Speed">
+            {SPEEDS.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label} — {s.hint}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label>Depth</label>
+          <select value={depth} onChange={(e) => props.setDepth(e.target.value as ScanDepth)} aria-label="Depth">
+            {DEPTHS.map((d) => (
+              <option key={d.value} value={d.value}>
+                {d.label} — up to {d.pages} pages per login
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <p className="hint" style={{ marginTop: 8 }}>
+        Crawls <span className="mono">{target.root_domain}</span> and its subdomains as a logged-out
+        visitor{logins.length ? ` and as ${logins.map((p) => p.label).join(", ")}` : ""}, up to {pages}{" "}
+        pages each, at most {SPEEDS.find((s) => s.value === speed)!.hint.split(" —")[0]}.
+        {excluded.length > 0 && <> Skips {excluded.map((r) => r.pattern).join(", ")}.</>}
+      </p>
+      {failing.length > 0 && (
+        <div className="notice" style={{ marginBottom: 8 }}>
+          Last login failed for {failing.map((p) => p.label).join(", ")}: those roles won&apos;t be tested.
+          Use Test login on the persona first.
+        </div>
+      )}
+      <div className="row">
+        <button className="btn-primary" disabled={props.busy} onClick={props.onStart}>
+          {props.busy ? "Starting…" : "Start scan"}
+        </button>
+        <button type="button" onClick={props.onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function ScanStateBadge({ scan }: { scan: Scan }) {
+  const { label, tone } = scanStatus(scan);
+  return <span className={`badge tone-${tone}`}>{label}</span>;
 }

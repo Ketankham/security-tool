@@ -1,7 +1,7 @@
 // Presentation metadata for the scan lifecycle. The canonical phase order
 // and grouping mirror sentinel_core.state_machine (docs/01 §5, docs/02).
 
-import type { FindingSeverity, PhaseName, PhaseStatus, ScanState } from "./types";
+import type { FindingSeverity, PhaseName, PhaseStatus, Scan, ScanState } from "./types";
 
 export interface PhaseMeta {
   name: PhaseName;
@@ -86,3 +86,41 @@ export const SEVERITY_META: Record<FindingSeverity, { label: string; tone: strin
   low: { label: "Low", tone: "sev-low" },
   info: { label: "Info", tone: "sev-info" },
 };
+
+// --- coverage (QA #38) -----------------------------------------------------------
+// A scan that "completes" with most checks skipped must not read as clean.
+
+/** The scan's status for display: a complete scan in which any check was
+ * skipped (or that ran degraded) is "Complete · partial". */
+export function scanStatus(scan: Pick<Scan, "state" | "phases" | "is_degraded">): {
+  label: string;
+  tone: string;
+} {
+  if (isFailureState(scan.state)) return { label: STATE_LABEL[scan.state], tone: "bad" };
+  if (scan.state === "complete") {
+    const partial = scan.is_degraded || scan.phases.some((p) => p.status === "skipped");
+    return partial
+      ? { label: "Complete · partial", tone: "running" }
+      : { label: "Complete", tone: "ok" };
+  }
+  if (isTerminal(scan.state)) return { label: STATE_LABEL[scan.state], tone: "muted" };
+  return { label: STATE_LABEL[scan.state], tone: "running" };
+}
+
+/** Phases that test for vulnerabilities (as opposed to set-up phases). */
+export const CHECK_PHASES: PhaseName[] = [
+  "passive_checks",
+  "active_injection",
+  "access_control",
+  "session_checks",
+  "business_logic",
+];
+
+export function crawlStats(scan: Scan): { pagesByPersona: Record<string, number>; endpointsByPersona: Record<string, number> } {
+  const crawl = scan.phases.find((p) => p.name === "crawling");
+  const stats = (crawl?.stats_json ?? {}) as Record<string, unknown>;
+  return {
+    pagesByPersona: (stats.pages_visited_by_persona as Record<string, number>) ?? {},
+    endpointsByPersona: (stats.endpoints_by_persona as Record<string, number>) ?? {},
+  };
+}
