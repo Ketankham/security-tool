@@ -1,0 +1,33 @@
+{
+  "_about": "External binaries the worker image installs (infra/docker/Dockerfile.worker). Every `go install` there must be listed here with the same version and a permitted licence; infra/scripts/tools_manifest_check.py enforces it in CI. ADR-0002: adopt MIT/permissive tools as separate processes, never GPL/AGPL.",
+  "permitted_licences": ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC"],
+  "tools": [
+    {
+      "name": "subfinder",
+      "module": "github.com/projectdiscovery/subfinder/v2/cmd/subfinder",
+      "version": "v2.17.0",
+      "licence": "MIT",
+      "source": "https://github.com/projectdiscovery/subfinder",
+      "installed_as": "subfinder",
+      "used_for": "Passive subdomain discovery (recon). Queries public data sources, sends nothing to the target."
+    },
+    {
+      "name": "httpx",
+      "module": "github.com/projectdiscovery/httpx/cmd/httpx",
+      "version": "v1.6.10",
+      "licence": "MIT",
+      "source": "https://github.com/projectdiscovery/httpx",
+      "installed_as": "pd-httpx",
+      "used_for": "HTTP probe of in-scope hosts: status, title, server, Wappalyzer-based technology detection."
+    },
+    {
+      "name": "tlsx",
+      "module": "github.com/projectdiscovery/tlsx/cmd/tlsx",
+      "version": "v1.4.4",
+      "licence": "MIT",
+      "source": "https://github.com/projectdiscovery/tlsx",
+      "installed_as": "tlsx",
+      "used_for": "TLS grading (installed; not yet called by a scan)."
+    }
+  ]
+}

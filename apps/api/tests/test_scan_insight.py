@@ -165,3 +165,121 @@ async def test_transcript_viewer_only_serves_this_scans_records(
     other_id = await store.put(b'{"request": {}, "response": null}')
     missing = await client.get(f"/scans/{scan_id}/transcripts/{other_id}", headers=headers)
     assert missing.status_code == 404
+
+
+async def _scan_with_recon(db_engine, target_id, root):
+    from sentinel_db.models import ToolRunRecord
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with factory() as session:
+        scan = Scan(target_id=uuid.UUID(target_id), state=ScanState.COMPLETE)
+        session.add(scan)
+        await session.flush()
+        now = datetime.now(UTC)
+        live = Asset(
+            scan_id=scan.id,
+            host=root,
+            discovery_source="root_domain",
+            sources=["root_domain"],
+            ip_addresses=["93.184.216.34"],
+            http_probes=[{"url": f"https://{root}", "status_code": 200, "tech": ["PHP:7.4"]}],
+            tech_fingerprint=["PHP:7.4", "nginx"],
+        )
+        excluded = Asset(
+            scan_id=scan.id,
+            host=f"admin.{root}",
+            discovery_source="subfinder",
+            sources=["crtsh"],
+            scope_status="excluded",
+            scope_reason="matches exclude rule",
+        )
+        session.add_all([live, excluded])
+        await session.flush()
+        session.add(Endpoint(asset_id=live.id, method="GET", path_template="/"))
+        session.add_all(
+            [
+                ToolRunRecord(
+                    scan_id=scan.id,
+                    seq=2,
+                    phase="recon",
+                    tool="httpx",
+                    binary="pd-httpx",
+                    version="v1.6.10",
+                    command="pd-httpx -json -rl 5",
+                    status="ok",
+                    started_at=now,
+                    finished_at=now + timedelta(seconds=2),
+                    duration_ms=2000,
+                    exit_code=0,
+                    timed_out=False,
+                    results_count=1,
+                    stdout="L" * 5000,
+                    stderr="banner",
+                    stdout_truncated=False,
+                    stderr_truncated=False,
+                ),
+                ToolRunRecord(
+                    scan_id=scan.id,
+                    seq=1,
+                    phase="recon",
+                    tool="subfinder",
+                    command="",
+                    status="not_installed",
+                    skip_reason="subfinder is not installed on the worker",
+                    timed_out=False,
+                    results_count=0,
+                    stdout="",
+                    stderr="",
+                    stdout_truncated=False,
+                    stderr_truncated=False,
+                ),
+            ]
+        )
+        await session.commit()
+        return scan.id
+
+
+async def test_tool_runs_listed_in_order_with_previews_and_downloadable(client, db_engine):
+    headers, target = await _org_target(client, "tr-a")
+    scan_id = await _scan_with_recon(db_engine, target["id"], "tr-a.test")
+    runs = (await client.get(f"/scans/{scan_id}/tool-runs", headers=headers)).json()
+    assert [r["tool"] for r in runs] == ["subfinder", "httpx"]
+    assert runs[0]["status"] == "not_installed" and runs[0]["skip_reason"]
+    assert runs[1]["stdout_chars"] == 5000 and len(runs[1]["stdout_preview"]) == 4000
+    assert runs[1]["duration_ms"] == 2000 and runs[1]["version"] == "v1.6.10"
+
+    out = await client.get(f"/scans/{scan_id}/tool-runs/{runs[1]['id']}/output", headers=headers)
+    assert out.status_code == 200
+    assert out.text.startswith("# httpx v1.6.10 (ok) — stdout\n# $ pd-httpx -json -rl 5\n")
+    assert "L" * 5000 in out.text
+    assert "attachment" in out.headers["content-disposition"]
+    err = await client.get(
+        f"/scans/{scan_id}/tool-runs/{runs[1]['id']}/output?stream=stderr", headers=headers
+    )
+    assert "banner" in err.text
+    bad = await client.get(
+        f"/scans/{scan_id}/tool-runs/{runs[1]['id']}/output?stream=env", headers=headers
+    )
+    assert bad.status_code == 422
+    missing = await client.get(f"/scans/{scan_id}/tool-runs/{uuid.uuid4()}/output", headers=headers)
+    assert missing.status_code == 404
+
+
+async def test_assets_list_scope_status_live_tech_and_endpoint_counts(client, db_engine):
+    headers, target = await _org_target(client, "as-a")
+    scan_id = await _scan_with_recon(db_engine, target["id"], "as-a.test")
+    assets = (await client.get(f"/scans/{scan_id}/assets", headers=headers)).json()
+    assert [a["host"] for a in assets] == ["as-a.test", "admin.as-a.test"]
+    assert assets[0]["live"] is True and assets[0]["endpoints"] == 1
+    assert assets[0]["tech"] == ["PHP:7.4", "nginx"]
+    assert assets[1]["scope_status"] == "excluded" and assets[1]["live"] is False
+
+
+async def test_recon_insight_is_scoped_to_the_callers_org(client, db_engine):
+    headers_a, target_a = await _org_target(client, "tr-o-a")
+    headers_b, _ = await _org_target(client, "tr-o-b")
+    scan_id = await _scan_with_recon(db_engine, target_a["id"], "tr-o-a.test")
+    runs = (await client.get(f"/scans/{scan_id}/tool-runs", headers=headers_a)).json()
+    for path in ("tool-runs", "assets", f"tool-runs/{runs[0]['id']}/output"):
+        resp = await client.get(f"/scans/{scan_id}/{path}", headers=headers_b)
+        assert resp.status_code == 404, path
