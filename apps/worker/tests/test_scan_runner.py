@@ -325,7 +325,9 @@ async def test_run_scan_stores_tool_runs_and_host_scope_and_applies_host_rules(d
     assert host_check("admin.tools.test") is not None
     assert host_check("www.tools.test") is None
     assert mock.call_args.kwargs["requests_per_second"] == 5.0
-    assert mock.call_args.kwargs["allow_private_ips"] is False
+    # Recon gets the worker setting (the tests turn it on for 127.0.0.1 servers).
+    assert mock.call_args.kwargs["allow_private_ips"] is get_settings().allow_private_addresses
+    assert mock.call_args.kwargs["profile"] == "light"
 
     async with factory() as session:
         runs = (
