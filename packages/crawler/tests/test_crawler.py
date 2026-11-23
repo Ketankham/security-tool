@@ -205,3 +205,80 @@ async def test_a_redirected_visit_is_recorded_where_it_ended(browser):
         await task
     assert {e.path_template for e in surface.endpoints} == {"/login"}
     assert surface.pages_visited == 1
+
+
+async def test_crawl_refuses_a_site_on_a_non_public_address(mini_app_server, browser):
+    """The mini app listens on 127.0.0.1: with the address guard on, the crawl
+    must not visit it, and says why instead of failing quietly."""
+    from sentinel_core.address_guard import AddressGuard
+
+    events: list[tuple[str, dict]] = []
+    crawler = _crawler(
+        mini_app_server,
+        address_guard=AddressGuard(),
+        on_event=lambda kind, persona, details: events.append((kind, details)),
+    )
+    surface = await crawler.crawl(browser, root_url=mini_app_server + "/", persona_id="alice")
+
+    assert surface.pages_visited == 0
+    assert surface.endpoints == []
+    skips = [d for kind, d in events if kind == "skip"]
+    assert skips and "non-public address" in skips[0]["reason"]
+    assert any("non-public address" in n for n in surface.notes)
+
+
+async def test_crawl_with_the_guard_off_still_works(mini_app_server, browser):
+    from sentinel_core.address_guard import AddressGuard
+
+    crawler = _crawler(mini_app_server, address_guard=AddressGuard(allow_private=True))
+    surface = await crawler.crawl(browser, root_url=mini_app_server + "/", persona_id="alice")
+    assert surface.pages_visited == 5
+
+
+async def test_browser_requests_to_non_public_hosts_are_aborted_and_reported_once():
+    from sentinel_core.address_guard import AddressGuard
+
+    async def resolve(host):
+        return ["10.0.0.9"] if host == "internal.acme.test" else ["93.184.216.34"]
+
+    events: list[tuple[str, dict]] = []
+    crawler = PersonaCrawler(
+        scope_guard=ScopeGuard(allowed_hosts={"acme.test"}, target_ownership_verified=True),
+        rate_limiter=RateLimiter(FakeRedis(), default_rate_per_sec=1000, burst=1000),
+        target_id="t",
+        address_guard=AddressGuard(resolver=resolve),
+        on_event=lambda kind, persona, details: events.append((kind, details)),
+    )
+
+    class Ctx:
+        handler = None
+
+        async def route(self, pattern, handler):
+            self.handler = handler
+
+    class Route:
+        def __init__(self):
+            self.outcome = None
+
+        async def fallback(self):
+            self.outcome = "fallback"
+
+        async def abort(self, reason):
+            self.outcome = f"abort:{reason}"
+
+    class Req:
+        def __init__(self, url):
+            self.url = url
+
+    ctx = Ctx()
+    await crawler._route_address_guard(ctx, "anonymous")
+
+    async def go(url):
+        route = Route()
+        await ctx.handler(route, Req(url))
+        return route.outcome
+
+    assert await go("https://www.acme.test/app.js") == "fallback"
+    assert await go("https://internal.acme.test/a") == "abort:blockedbyclient"
+    assert await go("https://internal.acme.test/b") == "abort:blockedbyclient"
+    assert len([e for e in events if e[0] == "skip"]) == 1  # reported once per host

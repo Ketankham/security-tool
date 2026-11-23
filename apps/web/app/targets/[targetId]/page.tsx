@@ -11,6 +11,7 @@ import type {
   LoginTestResult,
   ScanDepth,
   ScanSpeed,
+  ReconProfile,
   OwnershipChallenge,
   OwnershipMethod,
   Persona,
@@ -1021,6 +1022,7 @@ function ScansCard({ target }: { target: Target }) {
   const [confirming, setConfirming] = useState(false);
   const [speed, setSpeed] = useState<ScanSpeed>("normal");
   const [depth, setDepth] = useState<ScanDepth>("standard");
+  const [reconProfile, setReconProfile] = useState<ReconProfile>("light");
   const { data: personas } = usePoll<Persona[]>(() => api.listPersonas(target.id), 30000);
   const { data: rules } = usePoll<ScopeRule[]>(() => api.listScopeRules(target.id), 30000);
 
@@ -1028,7 +1030,7 @@ function ScansCard({ target }: { target: Target }) {
     setBusy(true);
     setStartErr(null);
     try {
-      const scan = await api.createScan(target.id, { speed, depth });
+      const scan = await api.createScan(target.id, { speed, depth, recon_profile: reconProfile });
       router.push(`/scans/${scan.id}`);
     } catch (e) {
       setStartErr(e instanceof ApiError ? e.detail : String(e));
@@ -1059,6 +1061,8 @@ function ScansCard({ target }: { target: Target }) {
             rules={rules ?? []}
             speed={speed}
             depth={depth}
+            reconProfile={reconProfile}
+            setReconProfile={setReconProfile}
             setSpeed={setSpeed}
             setDepth={setDepth}
             busy={busy}
@@ -1104,6 +1108,18 @@ const SPEEDS: { value: ScanSpeed; label: string; hint: string }[] = [
   { value: "normal", label: "Normal", hint: "5 requests/second" },
   { value: "fast", label: "Fast", hint: "10 requests/second — sturdy sites only" },
 ];
+const RECON_PROFILES: { value: ReconProfile; label: string; hint: string }[] = [
+  {
+    value: "light",
+    label: "Light",
+    hint: "default sources, up to 50 hosts — safe for live client sites",
+  },
+  {
+    value: "full",
+    label: "Full",
+    hint: "every subdomain source, up to 150 hosts — slower, finds more",
+  },
+];
 const DEPTHS: { value: ScanDepth; label: string; pages: number }[] = [
   { value: "quick", label: "Quick", pages: 30 },
   { value: "standard", label: "Standard", pages: 100 },
@@ -1118,13 +1134,15 @@ function RunScanPanel(props: {
   rules: ScopeRule[];
   speed: ScanSpeed;
   depth: ScanDepth;
+  reconProfile: ReconProfile;
+  setReconProfile: (p: ReconProfile) => void;
   setSpeed: (s: ScanSpeed) => void;
   setDepth: (d: ScanDepth) => void;
   busy: boolean;
   onStart: () => void;
   onCancel: () => void;
 }) {
-  const { target, personas, rules, speed, depth } = props;
+  const { target, personas, rules, speed, depth, reconProfile } = props;
   const logins = personas.filter((p) => p.has_login_recipe);
   const failing = logins.filter((p) => !p.is_available);
   const excluded = rules.filter((r) => r.effect === "exclude");
@@ -1148,6 +1166,20 @@ function RunScanPanel(props: {
             {DEPTHS.map((d) => (
               <option key={d.value} value={d.value}>
                 {d.label} — up to {d.pages} pages per login
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label>Recon</label>
+          <select
+            value={reconProfile}
+            onChange={(e) => props.setReconProfile(e.target.value as ReconProfile)}
+            aria-label="Recon profile"
+          >
+            {RECON_PROFILES.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label} — {p.hint}
               </option>
             ))}
           </select>

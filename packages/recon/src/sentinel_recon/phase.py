@@ -39,7 +39,8 @@ from .models import (
 from .resolver import detect_wildcard_dns, non_public_ips, resolve_a
 from .runs import skipped_run
 
-MAX_CANDIDATE_HOSTS = 50  # hosts resolved + probed per scan (time/cost budget)
+MAX_CANDIDATE_HOSTS = 50  # hosts resolved + probed per scan on the light profile
+FULL_MAX_CANDIDATE_HOSTS = 150  # ... and on the full profile
 MAX_LISTED_HOSTS = 500  # hosts kept in the result at all (the rest only counted)
 DNS_CONCURRENCY = 10
 
@@ -73,8 +74,13 @@ async def run_recon(
     host_check: HostCheck | None = None,
     requests_per_second: float = 5.0,
     allow_private_ips: bool = False,
+    profile: str = "light",
     log: LogFn | None = None,
 ) -> ReconResult:
+    """``profile``: "light" (default) or "full": every subfinder data source
+    and a higher host cap (see sentinel_core.scan_options)."""
+    full = profile == "full"
+    max_hosts = FULL_MAX_CANDIDATE_HOSTS if full else MAX_CANDIDATE_HOSTS
     log = log or _no_log
     root = root_domain.lower().rstrip(".")
     notes: list[str] = []
@@ -95,8 +101,9 @@ async def run_recon(
     # host -> where it came from
     candidates: dict[str, list[str]] = {root: ["root_domain"], f"www.{root}": ["common_name"]}
     if tool_availability["subfinder"]:
-        log("info", f"Running: {' '.join(['subfinder', *subfinder_wrapper.build_args(root)])}")
-        outcome = await subfinder_wrapper.run_subfinder(root)
+        args = subfinder_wrapper.build_args(root, all_sources=full)
+        log("info", f"Running: {' '.join(['subfinder', *args])}")
+        outcome = await subfinder_wrapper.run_subfinder(root, all_sources=full)
         tool_runs.append(outcome.run)
         for host, sources in outcome.hosts.items():
             merged = candidates.setdefault(host, [])
@@ -126,10 +133,10 @@ async def run_recon(
         )
 
     ordered = _prioritised(candidates, root)
-    kept, over = ordered[:MAX_CANDIDATE_HOSTS], ordered[MAX_CANDIDATE_HOSTS:]
+    kept, over = ordered[:max_hosts], ordered[max_hosts:]
     if over:
         notes.append(
-            f"{len(ordered)} candidate hosts found; only the first {MAX_CANDIDATE_HOSTS} "
+            f"{len(ordered)} candidate hosts found; only the first {max_hosts} "
             f"(root and www first, then A–Z) were checked this scan. Not checked: "
             f"{', '.join(over[:20])}{' …' if len(over) > 20 else ''}."
         )

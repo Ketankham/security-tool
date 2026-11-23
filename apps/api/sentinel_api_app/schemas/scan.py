@@ -4,7 +4,14 @@ from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
-from sentinel_core.scan_options import DEFAULT_DEPTH, DEFAULT_SPEED, Depth, Speed
+from sentinel_core.scan_options import (
+    DEFAULT_DEPTH,
+    DEFAULT_RECON_PROFILE,
+    DEFAULT_SPEED,
+    Depth,
+    ReconProfile,
+    Speed,
+)
 from sentinel_core.state_machine import PhaseStatus, ScanPhaseName, ScanState
 
 
@@ -40,6 +47,7 @@ class ScanCreate(BaseModel):
     # See sentinel_core.scan_options: requests/second and pages per persona.
     speed: Speed = DEFAULT_SPEED
     depth: Depth = DEFAULT_DEPTH
+    recon_profile: ReconProfile = DEFAULT_RECON_PROFILE
 
 
 class ScanOut(BaseModel):

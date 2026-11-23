@@ -43,7 +43,11 @@ async def create_scan(
         session,
         target,
         triggered_by=payload.triggered_by,
-        options={"speed": payload.speed, "depth": payload.depth},
+        options={
+            "speed": payload.speed,
+            "depth": payload.depth,
+            "recon_profile": payload.recon_profile,
+        },
     )
 
 
@@ -95,7 +99,7 @@ async def retry_scan(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "Target is not scannable yet — verify ownership first."
         )
-    # Same speed / depth as the scan being retried.
+    # Same speed / depth / recon profile as the scan being retried.
     return await _start_scan(session, target, triggered_by="retry", options=dict(old.options or {}))
 
 

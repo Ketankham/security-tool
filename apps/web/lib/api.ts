@@ -13,6 +13,7 @@ import type {
   OwnershipMethod,
   OwnershipVerifyResult,
   Persona,
+  ReconProfile,
   Scan,
   ScanDepth,
   ScanAsset,
@@ -197,7 +198,7 @@ export const api = {
   getScan: (scanId: string) => request<Scan>(`/scans/${scanId}`),
   createScan: (
     targetId: string,
-    options: { speed?: ScanSpeed; depth?: ScanDepth } = {},
+    options: { speed?: ScanSpeed; depth?: ScanDepth; recon_profile?: ReconProfile } = {},
     triggeredBy = "manual",
   ) =>
     request<Scan>(`/targets/${targetId}/scans`, {

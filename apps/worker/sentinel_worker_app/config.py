@@ -31,11 +31,13 @@ class Settings(BaseSettings):
     # scan worker runs; the login-test worker turns it off.
     sweep_interrupted_scans: bool = True
 
-    # Recon does not probe a discovered host that resolves to a private,
-    # loopback or link-local address (e.g. internal.acme.com -> 10.0.0.5),
-    # so a scan can't be used to reach the worker's own network. Turn on
-    # only for local testing against a site on this machine.
-    recon_allow_private_ips: bool = False
+    # Scans never send requests to a host that resolves to a private,
+    # loopback or link-local address (e.g. internal.acme.com -> 10.0.0.5, or
+    # the cloud metadata address): recon, the crawler and the HTTP engine all
+    # check (sentinel_core.address_guard), so a scan can't be used to reach
+    # the worker's own network. Turn on only for local testing against a site
+    # on this machine. Env: ALLOW_PRIVATE_ADDRESSES=true
+    allow_private_addresses: bool = False
 
 
 def get_settings() -> Settings:

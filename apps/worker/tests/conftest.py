@@ -27,6 +27,10 @@ from sentinel_db import Base
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+# The worker tests crawl and probe throwaway servers on 127.0.0.1, which the
+# address guard refuses by default. Tests of the guard itself switch it back on.
+os.environ.setdefault("ALLOW_PRIVATE_ADDRESSES", "true")
+
 DATABASE_URL = os.environ.get(
     "DATABASE_URL", "postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel"
 )

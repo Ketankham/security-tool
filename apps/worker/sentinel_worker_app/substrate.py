@@ -6,6 +6,7 @@ scan_runner.py so that module reads as phase orchestration, not wiring.
 from __future__ import annotations
 
 from redis.asyncio import Redis
+from sentinel_core.address_guard import AddressGuard
 from sentinel_core.http_engine import HttpEngine
 from sentinel_core.rate_limiter import RateLimiter
 from sentinel_core.scope_guard import ScopeGuard
@@ -33,6 +34,10 @@ def build_scope_guard(target: Target, scope_rules: list[ScopeRule]) -> ScopeGuar
     )
 
 
+def build_address_guard(settings: Settings) -> AddressGuard:
+    return AddressGuard(allow_private=settings.allow_private_addresses)
+
+
 def build_http_engine(
     *,
     scope_guard: ScopeGuard,
@@ -54,6 +59,7 @@ def build_http_engine(
         recorder=recorder,
         target_id=target_id,
         scan_id=scan_id,
+        address_guard=build_address_guard(settings),
     )
 
 

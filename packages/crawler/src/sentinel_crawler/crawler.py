@@ -21,6 +21,7 @@ from typing import Any, cast
 from urllib.parse import urlsplit
 
 from playwright.async_api import Browser, Page, Request, StorageState
+from sentinel_core.address_guard import AddressGuard
 from sentinel_core.rate_limiter import RateLimiter
 from sentinel_core.scope_guard import DestructiveActionGuard, ScopeGuard
 from sentinel_core.session_import import route_session_headers, split_session_state
@@ -50,6 +51,7 @@ class PersonaCrawler:
         rate_limiter: RateLimiter,
         target_id: str,
         destructive_guard: DestructiveActionGuard | None = None,
+        address_guard: AddressGuard | None = None,
         max_pages: int = 30,
         page_timeout_s: float = 15.0,
         on_event: CrawlEventSink | None = None,
@@ -59,6 +61,7 @@ class PersonaCrawler:
         self._rate_limiter = rate_limiter
         self._target_id = target_id
         self._destructive_guard = destructive_guard or DestructiveActionGuard()
+        self._address_guard = address_guard
         self._max_pages = max_pages
         self._page_timeout_s = page_timeout_s
 
@@ -85,6 +88,9 @@ class PersonaCrawler:
         # A header login (sentinel_core.session_import): the header goes on
         # requests to the target's own hosts only.
         await route_session_headers(context, session_headers, urlsplit(root_url).hostname or "")
+        # Registered after the header route above so it runs first; it only
+        # blocks, and hands everything else on with fallback().
+        await self._route_address_guard(context, persona_id)
         page = await context.new_page()
 
         surface = SurfaceMap(root_url=root_url, persona_id=persona_id)
@@ -122,6 +128,13 @@ class PersonaCrawler:
                         "skip", persona_id, url=url, reason=f"out of scope: {decision.reason}"
                     )
                     continue
+
+                if self._address_guard is not None:
+                    blocked = await self._address_guard.check(urlsplit(url).hostname or "")
+                    if blocked:
+                        surface.notes.append(f"Skipped URL on a non-public address: {url}")
+                        self._emit("skip", persona_id, url=url, reason=blocked)
+                        continue
 
                 check = self._destructive_guard.check(method="GET", url=url)
                 if check.is_suspect:
@@ -203,6 +216,29 @@ class PersonaCrawler:
             return surface
         finally:
             await context.close()
+
+    async def _route_address_guard(self, context: Any, persona_id: str) -> None:
+        """Backstop for what the page itself triggers: redirects and
+        sub-requests (scripts, XHR, images) to a host that resolves to a
+        non-public address are aborted before they leave. The pre-navigation
+        check above gives the clear skip message for pages we chose to visit."""
+        guard = self._address_guard
+        if guard is None:
+            return
+        reported: set[str] = set()
+
+        async def _handle(route: Any, request: Any) -> None:
+            host = urlsplit(request.url).hostname or ""
+            reason = await guard.check(host)
+            if reason is None:
+                await route.fallback()
+                return
+            if host not in reported:
+                reported.add(host)
+                self._emit("skip", persona_id, url=request.url, reason=reason)
+            await route.abort("blockedbyclient")
+
+        await context.route("**/*", _handle)
 
     def _record_network_request(
         self,

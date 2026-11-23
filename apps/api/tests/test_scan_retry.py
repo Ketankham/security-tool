@@ -74,3 +74,28 @@ async def test_scan_is_failed_at_once_when_the_queue_is_unreachable(client, monk
     assert scan["state"] == "failed"
     assert "job queue" in scan["fail_reason"]
     assert scan["finished_at"] is not None
+
+
+async def test_recon_profile_defaults_to_light_is_stored_and_survives_retry(
+    client, db_engine, no_dispatch, monkeypatch
+):
+    headers, target, scan = await _scan(client, "profile-default", monkeypatch)
+    assert scan["options"]["recon_profile"] == "light"
+
+    full = (
+        await client.post(
+            f"/targets/{target['id']}/scans", json={"recon_profile": "full"}, headers=headers
+        )
+    ).json()
+    assert full["options"]["recon_profile"] == "full"
+    await _set_state(db_engine, full["id"], ScanState.FAILED)
+    retried = (await client.post(f"/scans/{full['id']}/retry", headers=headers)).json()
+    assert retried["options"]["recon_profile"] == "full"
+
+
+async def test_unknown_recon_profile_is_rejected(client, no_dispatch, monkeypatch):
+    headers, target, _ = await _scan(client, "profile-bad", monkeypatch)
+    resp = await client.post(
+        f"/targets/{target['id']}/scans", json={"recon_profile": "everything"}, headers=headers
+    )
+    assert resp.status_code == 422
