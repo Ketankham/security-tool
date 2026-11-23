@@ -22,6 +22,7 @@ BINARY = "subfinder"
 # subfinder's own budget (minutes) — kept under our subprocess timeout so it
 # stops cleanly and prints its summary instead of being killed.
 MAX_TIME_MINUTES = 2
+FULL_MAX_TIME_MINUTES = 5  # -all queries every source, which takes longer
 
 _NO_KEY_RE = re.compile(r"Cannot use the (\S+) source because there was no API key")
 _SOURCE_ERR_RE = re.compile(r"Could not run source (\S+?):? ")
@@ -31,12 +32,13 @@ async def is_available() -> bool:
     return await looks_like_projectdiscovery_tool(BINARY)
 
 
-def build_args(root_domain: str) -> list[str]:
+def build_args(root_domain: str, *, all_sources: bool = False) -> list[str]:
     return [
         "-d", root_domain,
         "-json", "-cs",  # one JSON line per host, with the sources that reported it
+        *(["-all"] if all_sources else []),
         "-v", "-nc", "-duc",
-        "-max-time", str(MAX_TIME_MINUTES),
+        "-max-time", str(FULL_MAX_TIME_MINUTES if all_sources else MAX_TIME_MINUTES),
         "-timeout", "20",
     ]  # fmt: skip
 
@@ -73,9 +75,17 @@ def parse_hosts(stdout: str, root_domain: str) -> dict[str, list[str]]:
     return {h: sorted(s) for h, s in sorted(hosts.items())}
 
 
-async def run_subfinder(root_domain: str, *, timeout_s: float = 150.0) -> SubfinderOutcome:
+async def run_subfinder(
+    root_domain: str, *, all_sources: bool = False, timeout_s: float | None = None
+) -> SubfinderOutcome:
+    # Our kill timer sits above subfinder's own -max-time so it normally stops
+    # cleanly and prints its summary.
+    if timeout_s is None:
+        timeout_s = (FULL_MAX_TIME_MINUTES if all_sources else MAX_TIME_MINUTES) * 60 + 30
     version = await tool_version(BINARY)
-    result = await run_tool(BINARY, build_args(root_domain), timeout_s=timeout_s)
+    result = await run_tool(
+        BINARY, build_args(root_domain, all_sources=all_sources), timeout_s=timeout_s
+    )
     hosts = parse_hosts(result.stdout, root_domain) if result.ran else {}
     run = tool_run_from(
         "subfinder", result, binary=BINARY, version=version, results_count=len(hosts)
@@ -88,6 +98,6 @@ async def run_subfinder(root_domain: str, *, timeout_s: float = 150.0) -> Subfin
     )
 
 
-async def enumerate_subdomains(root_domain: str, *, timeout_s: float = 150.0) -> list[str]:
+async def enumerate_subdomains(root_domain: str, *, timeout_s: float | None = None) -> list[str]:
     """Host names only; [] (not an error) if subfinder isn't installed."""
     return sorted((await run_subfinder(root_domain, timeout_s=timeout_s)).hosts)

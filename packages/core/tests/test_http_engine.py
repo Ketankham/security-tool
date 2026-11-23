@@ -7,7 +7,9 @@ from sentinel_core.scope_guard import DestructiveActionGuard, ScopeGuard
 from sentinel_core.transcript import LocalTranscriptStore, TranscriptRecorder
 
 
-def make_engine(tmp_path, *, handler, allowed_hosts=None, read_write_enabled=False):
+def make_engine(
+    tmp_path, *, handler, allowed_hosts=None, read_write_enabled=False, address_guard=None
+):
     transport = httpx.MockTransport(handler)
     client = httpx.AsyncClient(transport=transport, follow_redirects=False)
     scope_guard = ScopeGuard(
@@ -23,6 +25,7 @@ def make_engine(tmp_path, *, handler, allowed_hosts=None, read_write_enabled=Fal
         destructive_guard=destructive_guard,
         target_id="target-1",
         scan_id="scan-1",
+        address_guard=address_guard,
         client=client,
     )
 
@@ -99,3 +102,36 @@ async def test_401_response_is_not_an_error_just_a_status(tmp_path):
     engine = make_engine(tmp_path, handler=handler)
     resp = await engine.request("GET", "https://app.acme.test/admin")
     assert resp.status_code == 401
+
+
+async def test_host_resolving_to_a_private_address_raises_and_makes_no_request(tmp_path):
+    from sentinel_core.address_guard import AddressGuard
+
+    called = {"n": 0}
+
+    def handler(request):
+        called["n"] += 1
+        return httpx.Response(200)
+
+    async def resolve(host):
+        return ["10.0.0.5"]
+
+    engine = make_engine(tmp_path, handler=handler, address_guard=AddressGuard(resolver=resolve))
+    with pytest.raises(ScopeViolation) as exc:
+        await engine.request("GET", "https://app.acme.test/")
+    assert "non-public address" in str(exc.value)
+    assert called["n"] == 0
+
+
+async def test_public_host_passes_the_address_guard(tmp_path):
+    from sentinel_core.address_guard import AddressGuard
+
+    async def resolve(host):
+        return ["93.184.216.34"]
+
+    engine = make_engine(
+        tmp_path,
+        handler=lambda request: httpx.Response(200),
+        address_guard=AddressGuard(resolver=resolve),
+    )
+    assert (await engine.request("GET", "https://app.acme.test/")).status_code == 200

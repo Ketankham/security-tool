@@ -70,7 +70,12 @@ from .config import Settings, get_settings
 from .passive_adapter import PassiveStats, run_passive_and_verify
 from .report_adapter import build_scan_report, persist_report
 from .scan_log import NULL_LOG, NullScanLog, ScanLog
-from .substrate import build_http_engine, build_report_store, build_scope_guard
+from .substrate import (
+    build_address_guard,
+    build_http_engine,
+    build_report_store,
+    build_scope_guard,
+)
 from .surface_adapter import merge_surface_map
 
 log = structlog.get_logger(__name__)
@@ -346,7 +351,12 @@ async def _run_crawling(
                 persona=who,
             )
         elif kind == "skip":
-            scan_log.add("crawl", f"Skipped {d['url']}: {d['reason']}", persona=who)
+            scan_log.add(
+                "crawl",
+                f"Skipped {d['url']}: {d['reason']}",
+                level="warn" if "non-public address" in str(d["reason"]) else "info",
+                persona=who,
+            )
         elif kind == "fail":
             scan_log.add(
                 "crawl", f"Could not load {d['url']}: {d['error']}", level="warn", persona=who
@@ -364,6 +374,7 @@ async def _run_crawling(
         scope_guard=scope_guard,
         rate_limiter=rate_limiter,
         target_id=str(target.id),
+        address_guard=build_address_guard(get_settings()),
         max_pages=max_pages,
         on_event=crawl_event,
     )
@@ -558,10 +569,12 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
 
         machine = ScanStateMachine(current=scan.state, paused_from=scan.paused_from)
         speed_rps, depth_pages = scan_options_mod.resolve(scan.options)
+        recon_profile = scan_options_mod.resolve_recon_profile(scan.options)
         scan_log.add(
             "scan",
             f"Scan started for {target.root_domain} (speed {speed_rps:g} requests/second, "
-            f"up to {depth_pages} pages per identity; started by: {scan.triggered_by}).",
+            f"up to {depth_pages} pages per identity, {recon_profile} recon profile; "
+            f"started by: {scan.triggered_by}).",
         )
 
         # --- Phase: SCOPE_VERIFYING ---
@@ -638,7 +651,8 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
             target.root_domain,
             host_check=recon_adapter.host_check_for(recon_guard),
             requests_per_second=speed_rps,
-            allow_private_ips=get_settings().recon_allow_private_ips,
+            allow_private_ips=get_settings().allow_private_addresses,
+            profile=recon_profile,
             log=lambda level, message: scan_log.add("recon", message, level=level),
         )
         recon_adapter.log_recon(scan_log, recon_result)

@@ -133,6 +133,7 @@ export interface ScanPhase {
 
 export type ScanSpeed = "gentle" | "normal" | "fast";
 export type ScanDepth = "quick" | "standard" | "deep";
+export type ReconProfile = "light" | "full";
 
 export interface Scan {
   id: string;
@@ -142,7 +143,7 @@ export interface Scan {
   is_degraded: boolean;
   degraded_reasons: string[];
   fail_reason: string | null;
-  options: { speed?: ScanSpeed; depth?: ScanDepth };
+  options: { speed?: ScanSpeed; depth?: ScanDepth; recon_profile?: ReconProfile };
   created_at: string;
   started_at: string | null;
   finished_at: string | null;

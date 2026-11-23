@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import httpx
 import structlog
 
+from sentinel_core.address_guard import AddressGuard
 from sentinel_core.rate_limiter import RateLimiter
 from sentinel_core.scope_guard import (
     DestructiveActionGuard,
@@ -69,6 +71,7 @@ class HttpEngine:
         target_id: str,
         scan_id: str,
         destructive_guard: DestructiveActionGuard | None = None,
+        address_guard: AddressGuard | None = None,
         timeout_s: float = 20.0,
         max_retries: int = 2,
         user_agent: str = "SentinelScanner/0.1 (+https://example.invalid/about-our-scanner)",
@@ -80,6 +83,7 @@ class HttpEngine:
         self._target_id = target_id
         self._scan_id = scan_id
         self._destructive_guard = destructive_guard or DestructiveActionGuard()
+        self._address_guard = address_guard
         self._timeout_s = timeout_s
         self._max_retries = max_retries
         self._user_agent = user_agent
@@ -120,6 +124,21 @@ class HttpEngine:
                 reason=decision.reason,
             )
             raise ScopeViolation(decision)
+
+        if self._address_guard is not None:
+            blocked = await self._address_guard.check(urlsplit(url).hostname or "")
+            if blocked:
+                log.warning(
+                    "address_guard.blocked",
+                    target_id=self._target_id,
+                    scan_id=self._scan_id,
+                    method=method,
+                    url=url,
+                    reason=blocked,
+                )
+                raise ScopeViolation(
+                    ScopeDecision(verdict=ScopeVerdict.BLOCKED_HOST, reason=blocked)
+                )
 
         if not skip_destructive_guard:
             check = self._destructive_guard.check(method=method, url=url, link_text=link_text)

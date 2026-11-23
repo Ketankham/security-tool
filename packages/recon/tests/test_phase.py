@@ -197,3 +197,45 @@ def test_asset_tech_prefers_detections_over_raw_server_header():
         http_probes=[HttpProbeResult(url="u", status_code=200, title=None, server="nginx/1.2")],
     )
     assert header_only.tech == ["nginx/1.2"]
+
+
+async def test_full_profile_asks_subfinder_for_all_sources_and_raises_the_host_cap():
+    from sentinel_recon.phase import FULL_MAX_CANDIDATE_HOSTS
+
+    found = {f"a{i:03d}.acme.test": ["crtsh"] for i in range(200)}
+    with ExitStack() as stack:
+        probe_mock = _patches(stack, subfinder=True, found=found)
+        run_mock = stack.enter_context(
+            patch(
+                "sentinel_recon.phase.subfinder_wrapper.run_subfinder",
+                new=AsyncMock(
+                    return_value=SubfinderOutcome(
+                        hosts=found, run=ToolRun(tool="subfinder", status="ok")
+                    )
+                ),
+            )
+        )
+        result = await run_recon("acme.test", profile="full")
+
+    assert run_mock.call_args.kwargs["all_sources"] is True
+    probed = probe_mock.call_args.args[0]
+    assert len(probed) == FULL_MAX_CANDIDATE_HOSTS == 150
+    assert probed[:2] == ["acme.test", "www.acme.test"] or probed[0] == "acme.test"
+    assert any("first 150" in n for n in result.notes)
+
+
+async def test_light_profile_is_the_default_and_uses_default_sources():
+    with ExitStack() as stack:
+        _patches(stack, subfinder=True)
+        run_mock = stack.enter_context(
+            patch(
+                "sentinel_recon.phase.subfinder_wrapper.run_subfinder",
+                new=AsyncMock(
+                    return_value=SubfinderOutcome(
+                        hosts={}, run=ToolRun(tool="subfinder", status="ok")
+                    )
+                ),
+            )
+        )
+        await run_recon("acme.test")
+    assert run_mock.call_args.kwargs["all_sources"] is False

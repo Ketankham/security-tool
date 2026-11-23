@@ -41,7 +41,8 @@ export function CoverageCard({ scan }: { scan: Scan }) {
         {(scan.options?.speed || scan.options?.depth) && (
           <li>
             Settings: speed {SPEED_TEXT[scan.options.speed ?? "normal"]}, depth{" "}
-            {DEPTH_TEXT[scan.options.depth ?? "standard"]}
+            {DEPTH_TEXT[scan.options.depth ?? "standard"]}, recon{" "}
+            {scan.options.recon_profile === "full" ? "full" : "light"}
           </li>
         )}
         {auth && (auth.personas_configured ?? 0) > 0 && (

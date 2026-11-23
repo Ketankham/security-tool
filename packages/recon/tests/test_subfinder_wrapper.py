@@ -99,3 +99,13 @@ async def test_run_subfinder_keeps_partial_results_on_timeout():
         outcome = await run_subfinder("acme.test")
     assert outcome.run.status == "timed_out"
     assert list(outcome.hosts) == ["a.acme.test"]
+
+
+def test_build_args_full_profile_adds_all_sources_and_more_time():
+    from sentinel_recon.subfinder_wrapper import build_args
+
+    light, full = build_args("acme.test"), build_args("acme.test", all_sources=True)
+    assert "-all" not in light and "-all" in full
+    assert light[light.index("-max-time") + 1] == "2"
+    assert full[full.index("-max-time") + 1] == "5"
+    assert light[:2] == ["-d", "acme.test"]
