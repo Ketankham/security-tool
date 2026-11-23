@@ -5,17 +5,24 @@ evidence. All read-only and org-scoped through get_owned_scan."""
 from __future__ import annotations
 
 import json
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import PlainTextResponse
 from sentinel_core.transcript import LocalTranscriptStore
-from sentinel_db.models import Asset, Endpoint, Scan, ScanEvent, TranscriptRecord
+from sentinel_db.models import Asset, Endpoint, Scan, ScanEvent, ToolRunRecord, TranscriptRecord
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings, get_settings
 from ..deps import get_owned_scan, get_session
-from ..schemas.scan_insight import ScanEndpointOut, ScanEventOut, ScanEventsOut
+from ..schemas.scan_insight import (
+    ScanAssetOut,
+    ScanEndpointOut,
+    ScanEventOut,
+    ScanEventsOut,
+    ToolRunOut,
+)
 
 router = APIRouter(tags=["scan-insight"])
 
@@ -106,6 +113,129 @@ async def list_scan_endpoints(
         )
         for host, ep in rows
     ]
+
+
+_PREVIEW_CHARS = 4000
+
+
+@router.get("/scans/{scan_id}/tool-runs", response_model=list[ToolRunOut])
+async def list_tool_runs(
+    scan: Scan = Depends(get_owned_scan),
+    session: AsyncSession = Depends(get_session),
+) -> list[ToolRunOut]:
+    """Every tool the scan ran (subfinder, httpx, the built-in DNS and HTTP
+    probers): the exact command, version, timing, exit code and a preview
+    of what it printed."""
+    rows = (
+        (
+            await session.execute(
+                select(ToolRunRecord)
+                .where(ToolRunRecord.scan_id == scan.id)
+                .order_by(ToolRunRecord.seq)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        ToolRunOut(
+            id=r.id,
+            seq=r.seq,
+            phase=r.phase,
+            tool=r.tool,
+            binary=r.binary,
+            version=r.version,
+            command=r.command,
+            status=r.status,
+            skip_reason=r.skip_reason,
+            started_at=r.started_at,
+            finished_at=r.finished_at,
+            duration_ms=r.duration_ms,
+            exit_code=r.exit_code,
+            timed_out=r.timed_out,
+            results_count=r.results_count,
+            stdout_chars=len(r.stdout),
+            stderr_chars=len(r.stderr),
+            stdout_truncated=r.stdout_truncated,
+            stderr_truncated=r.stderr_truncated,
+            stdout_preview=r.stdout[:_PREVIEW_CHARS],
+            stderr_preview=r.stderr[:_PREVIEW_CHARS],
+        )
+        for r in rows
+    ]
+
+
+@router.get("/scans/{scan_id}/tool-runs/{run_id}/output", response_class=PlainTextResponse)
+async def download_tool_output(
+    run_id: uuid.UUID,
+    stream: str = Query(default="stdout", pattern="^(stdout|stderr)$"),
+    scan: Scan = Depends(get_owned_scan),
+    session: AsyncSession = Depends(get_session),
+) -> PlainTextResponse:
+    run = (
+        await session.execute(
+            select(ToolRunRecord).where(
+                ToolRunRecord.id == run_id, ToolRunRecord.scan_id == scan.id
+            )
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Tool run not found for this scan.")
+    body = run.stdout if stream == "stdout" else run.stderr
+    cut = run.stdout_truncated if stream == "stdout" else run.stderr_truncated
+    header = f"# {run.tool} {run.version or ''} ({run.status}) — {stream}\n# $ {run.command}\n" + (
+        "# Output was longer than the stored limit and is cut off.\n" if cut else ""
+    )
+    safe_tool = "".join(c if c.isalnum() else "-" for c in run.tool).strip("-")
+    return PlainTextResponse(
+        header + body + ("\n" if body and not body.endswith("\n") else ""),
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="scan-{str(scan.id)[:8]}-{run.seq}-{safe_tool}-{stream}.txt"'
+            )
+        },
+    )
+
+
+@router.get("/scans/{scan_id}/assets", response_model=list[ScanAssetOut])
+async def list_scan_assets(
+    scan: Scan = Depends(get_owned_scan),
+    session: AsyncSession = Depends(get_session),
+) -> list[ScanAssetOut]:
+    """Every host recon found (and every host the crawl reached), with where
+    it came from, whether it was probed and, if not, why."""
+    count_rows = (
+        await session.execute(
+            select(Endpoint.asset_id, func.count())
+            .join(Asset, Asset.id == Endpoint.asset_id)
+            .where(Asset.scan_id == scan.id)
+            .group_by(Endpoint.asset_id)
+        )
+    ).all()
+    counts: dict[uuid.UUID, int] = {row[0]: int(row[1]) for row in count_rows}
+    assets = (
+        (await session.execute(select(Asset).where(Asset.scan_id == scan.id).order_by(Asset.host)))
+        .scalars()
+        .all()
+    )
+    out = [
+        ScanAssetOut(
+            host=a.host,
+            discovery_source=a.discovery_source,
+            sources=list(a.sources or []),
+            scope_status=a.scope_status,
+            scope_reason=a.scope_reason,
+            ip_addresses=list(a.ip_addresses or []),
+            live=any(p.get("status_code") is not None for p in (a.http_probes or [])),
+            tech=list(a.tech_fingerprint or []),
+            http_probes=list(a.http_probes or []),
+            endpoints=counts.get(a.id, 0),
+        )
+        for a in assets
+    ]
+    order = {"in_scope": 0, "excluded": 1, "private_ip": 2, "unresolved": 3, "capped": 4}
+    out.sort(key=lambda a: (order.get(a.scope_status, 9), not a.live, a.host))
+    return out
 
 
 @router.get("/scans/{scan_id}/transcripts/{transcript_id}")

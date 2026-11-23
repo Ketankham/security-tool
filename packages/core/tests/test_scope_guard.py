@@ -98,3 +98,39 @@ def test_destructive_guard_allows_safe_get():
     guard = DestructiveActionGuard()
     check = guard.check(method="GET", url="https://app.acme.test/dashboard")
     assert not check.is_suspect
+
+
+def test_host_exclude_rule_blocks_that_host():
+    guard = make_guard(
+        allowed_hosts={"acme.test", "*.acme.test"},
+        rules=[ScopeRule(kind="host", pattern="admin.acme.test", effect="exclude")],
+    )
+    assert not guard.evaluate(method="GET", url="https://admin.acme.test/").allowed
+    assert guard.evaluate(method="GET", url="https://www.acme.test/").allowed
+
+
+def test_host_exclude_wildcard_rule_blocks_subdomains_only():
+    guard = make_guard(
+        allowed_hosts={"acme.test", "*.acme.test"},
+        rules=[ScopeRule(kind="host", pattern="*.internal.acme.test", effect="exclude")],
+    )
+    assert not guard.evaluate(method="GET", url="https://db.internal.acme.test/").allowed
+    assert guard.evaluate(method="GET", url="https://internal.acme.test/").allowed
+
+
+def test_host_include_rules_switch_to_allow_list():
+    guard = make_guard(
+        allowed_hosts={"acme.test", "*.acme.test"},
+        rules=[ScopeRule(kind="host", pattern="app.acme.test", effect="include")],
+    )
+    assert guard.evaluate(method="GET", url="https://app.acme.test/x").allowed
+    decision = guard.evaluate(method="GET", url="https://www.acme.test/")
+    assert decision.verdict is ScopeVerdict.BLOCKED_HOST
+
+
+def test_host_include_rule_cannot_widen_past_verified_hosts():
+    guard = make_guard(
+        allowed_hosts={"acme.test"},
+        rules=[ScopeRule(kind="host", pattern="evil.example", effect="include")],
+    )
+    assert not guard.evaluate(method="GET", url="https://evil.example/").allowed

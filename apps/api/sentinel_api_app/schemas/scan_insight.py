@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
@@ -32,3 +33,45 @@ class ScanEndpointOut(BaseModel):
     source: str
     # Persona ids that reached it ("anonymous" is the logged-out visitor).
     persona_ids: list[str]
+
+
+class ToolRunOut(BaseModel):
+    """One tool invocation. Output bodies are fetched separately (they can
+    be large); a short preview comes with the list."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    seq: int
+    phase: str
+    tool: str
+    binary: str | None
+    version: str | None
+    command: str
+    status: str
+    skip_reason: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration_ms: int | None
+    exit_code: int | None
+    timed_out: bool
+    results_count: int
+    stdout_chars: int
+    stderr_chars: int
+    stdout_truncated: bool
+    stderr_truncated: bool
+    stdout_preview: str
+    stderr_preview: str
+
+
+class ScanAssetOut(BaseModel):
+    host: str
+    discovery_source: str
+    sources: list[str]
+    scope_status: str
+    scope_reason: str | None
+    ip_addresses: list[str]
+    live: bool
+    tech: list[str]
+    http_probes: list[dict]
+    endpoints: int

@@ -23,6 +23,9 @@ class ReportAsset:
     discovery_source: str
     ip_addresses: list[str] = field(default_factory=list)
     tech_fingerprint: list[str] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)
+    scope_status: str = "in_scope"
+    live: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -30,6 +33,9 @@ class ReportAsset:
             "discovery_source": self.discovery_source,
             "ip_addresses": list(self.ip_addresses),
             "tech_fingerprint": list(self.tech_fingerprint),
+            "sources": list(self.sources),
+            "scope_status": self.scope_status,
+            "live": self.live,
         }
 
 

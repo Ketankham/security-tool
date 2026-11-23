@@ -36,6 +36,9 @@ async def build_scan_report(
             discovery_source=a.discovery_source,
             ip_addresses=a.ip_addresses,
             tech_fingerprint=a.tech_fingerprint,
+            sources=a.sources or [],
+            scope_status=a.scope_status or "in_scope",
+            live=any(p.get("status_code") is not None for p in (a.http_probes or [])),
         )
         for a in assets
     ]

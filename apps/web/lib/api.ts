@@ -15,7 +15,9 @@ import type {
   Persona,
   Scan,
   ScanDepth,
+  ScanAsset,
   ScanEndpoint,
+  ToolRun,
   ScanEventsPage,
   ScanSpeed,
   ScopeRule,
@@ -208,6 +210,8 @@ export const api = {
   listScanEvents: (scanId: string, afterSeq = 0, limit = 2000) =>
     request<ScanEventsPage>(`/scans/${scanId}/events?after_seq=${afterSeq}&limit=${limit}`),
   listScanEndpoints: (scanId: string) => request<ScanEndpoint[]>(`/scans/${scanId}/endpoints`),
+  listToolRuns: (scanId: string) => request<ToolRun[]>(`/scans/${scanId}/tool-runs`),
+  listScanAssets: (scanId: string) => request<ScanAsset[]>(`/scans/${scanId}/assets`),
   getTranscript: (scanId: string, transcriptId: string) =>
     request<TranscriptDoc>(`/scans/${scanId}/transcripts/${transcriptId}`),
   getScanReport: (scanId: string) =>
@@ -217,21 +221,37 @@ export const api = {
   listFindings: (scanId: string) => request<Finding[]>(`/scans/${scanId}/findings`),
 };
 
-/** Downloads the scan's activity log as a text file. A plain link can't be
- * used: the API needs the X-Org-Id header, which only fetch can send. */
-export async function downloadScanLog(scanId: string): Promise<void> {
+/** Downloads an API text file. A plain link can't be used: the API needs
+ * the X-Org-Id header, which only fetch can send. */
+async function downloadText(path: string, filename: string): Promise<void> {
   const orgId = getOrgId();
   if (!orgId) throw new ApiError(401, "No organization selected.");
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}/scans/${scanId}/events/download`, {
-      headers: { "X-Org-Id": orgId },
-    });
+    res = await fetch(`${API_BASE}${path}`, { headers: { "X-Org-Id": orgId } });
   } catch {
     throw new ApiError(0, `Cannot reach the API at ${API_BASE}. Is it running?`);
   }
   if (!res.ok) throw new ApiError(res.status, `${res.status} ${res.statusText}`);
-  saveBlob(await res.blob(), `scan-${scanId.slice(0, 8)}-log.txt`);
+  saveBlob(await res.blob(), filename);
+}
+
+/** The scan's activity log as a text file. */
+export function downloadScanLog(scanId: string): Promise<void> {
+  return downloadText(`/scans/${scanId}/events/download`, `scan-${scanId.slice(0, 8)}-log.txt`);
+}
+
+/** One tool run's full stdout or stderr as a text file. */
+export function downloadToolOutput(
+  scanId: string,
+  run: { id: string; seq: number; tool: string },
+  stream: "stdout" | "stderr",
+): Promise<void> {
+  const tool = run.tool.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "");
+  return downloadText(
+    `/scans/${scanId}/tool-runs/${run.id}/output?stream=${stream}`,
+    `scan-${scanId.slice(0, 8)}-${run.seq}-${tool}-${stream}.txt`,
+  );
 }
 
 /** Saves text/JSON the page already holds as a file. */

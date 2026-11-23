@@ -219,6 +219,54 @@ export interface ScanEndpoint {
   persona_ids: string[];
 }
 
+export interface ToolRun {
+  id: string;
+  seq: number;
+  phase: string;
+  tool: string;
+  binary: string | null;
+  version: string | null;
+  command: string;
+  status: "ok" | "failed" | "timed_out" | "not_installed" | "skipped" | string;
+  skip_reason: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  exit_code: number | null;
+  timed_out: boolean;
+  results_count: number;
+  stdout_chars: number;
+  stderr_chars: number;
+  stdout_truncated: boolean;
+  stderr_truncated: boolean;
+  stdout_preview: string;
+  stderr_preview: string;
+}
+
+export interface HttpProbe {
+  url: string;
+  status_code: number | null;
+  title?: string | null;
+  server?: string | null;
+  tech?: string[];
+  error?: string | null;
+  cdn?: string | null;
+  content_type?: string | null;
+}
+
+export interface ScanAsset {
+  host: string;
+  discovery_source: string;
+  sources: string[];
+  scope_status: "in_scope" | "excluded" | "private_ip" | "unresolved" | "capped" | string;
+  scope_reason: string | null;
+  ip_addresses: string[];
+  live: boolean;
+  tech: string[];
+  http_probes: HttpProbe[];
+  endpoints: number;
+}
+
 export interface TranscriptDoc {
   request?: { method?: string; url?: string; headers?: Record<string, string>; body?: string | null };
   response?: {

@@ -531,3 +531,20 @@ input[aria-invalid="true"] {
     word-break: break-all;
   }
 }
+
+/* Report tables (hosts, technologies, commands) */
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.report-table th {
+  text-align: left;
+  color: var(--text-dim);
+  padding: 4px 8px;
+}
+.report-table td {
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
+  vertical-align: top;
+}

@@ -265,3 +265,84 @@ def test_scope_guard_follows_the_gate_switch_but_keeps_host_confinement(monkeypa
     assert guard.evaluate(method="GET", url="https://app.client.test/x").allowed
     # Turning the gate off never widens the host scope.
     assert not guard.evaluate(method="GET", url="https://other.test/").allowed
+
+
+async def test_run_scan_stores_tool_runs_and_host_scope_and_applies_host_rules(db_engine):
+    from datetime import UTC, datetime
+
+    from sentinel_db.models import ScopeRule, ToolRunRecord
+    from sentinel_recon import ToolRun
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with factory() as session:
+        target = await _make_scannable_target(session, domain="tools.test")
+        session.add(
+            ScopeRule(
+                target_id=target.id,
+                kind="host",
+                pattern="admin.tools.test",
+                effect="exclude",
+                label="no admin",
+            )
+        )
+        scan = await _make_scan(session, target)
+
+    base = _make_recon_result("tools.test", degraded=False)
+    now = datetime.now(UTC)
+    recon = ReconResult(
+        root_domain="tools.test",
+        assets=[
+            base.assets[0],
+            DiscoveredAsset(
+                host="admin.tools.test",
+                source="subfinder",
+                sources=["crtsh"],
+                scope_status="excluded",
+                scope_reason="Host 'admin.tools.test' matches exclude rule 'no admin'.",
+            ),
+        ],
+        tool_availability=base.tool_availability,
+        wildcard_dns_suspected=False,
+        tool_runs=[
+            ToolRun(
+                tool="subfinder",
+                status="ok",
+                command="subfinder -d tools.test -json -cs",
+                version="v2.17.0",
+                started_at=now,
+                finished_at=now,
+                exit_code=0,
+                stdout='{"host":"admin.tools.test"}\nAuthorization: Bearer abcdefghijklmnop',
+                results_count=1,
+            )
+        ],
+    )
+    mock = AsyncMock(return_value=recon)
+    with patch("sentinel_worker_app.scan_runner.run_recon", new=mock):
+        await run_scan(str(scan.id))
+
+    host_check = mock.call_args.kwargs["host_check"]
+    assert host_check("admin.tools.test") is not None
+    assert host_check("www.tools.test") is None
+    assert mock.call_args.kwargs["requests_per_second"] == 5.0
+    assert mock.call_args.kwargs["allow_private_ips"] is False
+
+    async with factory() as session:
+        runs = (
+            (await session.execute(select(ToolRunRecord).where(ToolRunRecord.scan_id == scan.id)))
+            .scalars()
+            .all()
+        )
+        assert [(r.tool, r.status, r.version, r.seq) for r in runs] == [
+            ("subfinder", "ok", "v2.17.0", 1)
+        ]
+        assert "abcdefghijklmnop" not in runs[0].stdout  # redacted before storing
+        assets = {
+            a.host: a
+            for a in (await session.execute(select(Asset).where(Asset.scan_id == scan.id)))
+            .scalars()
+            .all()
+        }
+        assert assets["admin.tools.test"].scope_status == "excluded"
+        assert assets["admin.tools.test"].sources == ["crtsh"]
+        assert assets["tools.test"].tech_fingerprint == ["nginx"]
