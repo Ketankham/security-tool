@@ -13,13 +13,14 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 MAX_STDOUT_CHARS = 512_000
 MAX_STDERR_CHARS = 128_000
+MAX_EXTRA_CHARS = 512 * 1024
 
 
 class ToolRunRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -47,3 +48,7 @@ class ToolRunRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     stderr: Mapped[str] = mapped_column(Text, default="")
     stdout_truncated: Mapped[bool] = mapped_column(Boolean, default=False)
     stderr_truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    # A second output a tool can leave besides stdout/stderr, e.g. nmap's
+    # normal-format report (-oN). Redacted and capped at MAX_EXTRA_CHARS.
+    extra_output: Mapped[str] = mapped_column(Text, default="", server_default=text("''"))
+    extra_output_label: Mapped[str | None] = mapped_column(String(50), nullable=True)

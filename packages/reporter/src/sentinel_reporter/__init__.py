@@ -12,6 +12,7 @@ from .models import (
     ReportEndpoint,
     ReportFinding,
     ReportPath,
+    ReportPort,
     ScanReport,
 )
 
@@ -22,6 +23,7 @@ __all__ = [
     "ReportEndpoint",
     "ReportFinding",
     "ReportPath",
+    "ReportPort",
 ]
 
 __version__ = "0.1.0"

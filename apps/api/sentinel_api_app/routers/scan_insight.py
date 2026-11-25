@@ -4,6 +4,7 @@ evidence. All read-only and org-scoped through get_owned_scan."""
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import uuid
 
@@ -14,11 +15,13 @@ from sentinel_db.models import (
     Asset,
     DiscoveredPath,
     Endpoint,
+    PortService,
     Scan,
     ScanEvent,
     ToolRunRecord,
     TranscriptRecord,
 )
+from sentinel_db.models.tool_run import MAX_EXTRA_CHARS
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +29,7 @@ from ..config import Settings, get_settings
 from ..deps import get_owned_scan, get_session
 from ..schemas.scan_insight import (
     DiscoveredPathOut,
+    PortServiceOut,
     ScanAssetOut,
     ScanEndpointOut,
     ScanEventOut,
@@ -169,6 +173,8 @@ async def list_tool_runs(
             stderr_truncated=r.stderr_truncated,
             stdout_preview=r.stdout[:_PREVIEW_CHARS],
             stderr_preview=r.stderr[:_PREVIEW_CHARS],
+            extra_output_chars=len(r.extra_output or ""),
+            extra_output_label=r.extra_output_label,
         )
         for r in rows
     ]
@@ -177,7 +183,7 @@ async def list_tool_runs(
 @router.get("/scans/{scan_id}/tool-runs/{run_id}/output", response_class=PlainTextResponse)
 async def download_tool_output(
     run_id: uuid.UUID,
-    stream: str = Query(default="stdout", pattern="^(stdout|stderr)$"),
+    stream: str = Query(default="stdout", pattern="^(stdout|stderr|extra)$"),
     scan: Scan = Depends(get_owned_scan),
     session: AsyncSession = Depends(get_session),
 ) -> PlainTextResponse:
@@ -190,9 +196,20 @@ async def download_tool_output(
     ).scalar_one_or_none()
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Tool run not found for this scan.")
-    body = run.stdout if stream == "stdout" else run.stderr
-    cut = run.stdout_truncated if stream == "stdout" else run.stderr_truncated
-    header = f"# {run.tool} {run.version or ''} ({run.status}) — {stream}\n# $ {run.command}\n" + (
+    if stream == "extra":
+        if not run.extra_output:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, "This tool run has no additional output."
+            )
+        body = run.extra_output
+        cut = len(body) >= MAX_EXTRA_CHARS
+        label = run.extra_output_label or "additional output"
+        what = f"{stream} ({label})"
+    else:
+        body = run.stdout if stream == "stdout" else run.stderr
+        cut = run.stdout_truncated if stream == "stdout" else run.stderr_truncated
+        what = stream
+    header = f"# {run.tool} {run.version or ''} ({run.status}) — {what}\n# $ {run.command}\n" + (
         "# Output was longer than the stored limit and is cut off.\n" if cut else ""
     )
     safe_tool = "".join(c if c.isalnum() else "-" for c in run.tool).strip("-")
@@ -230,6 +247,31 @@ async def list_scan_paths(
         .all()
     )
     return [DiscoveredPathOut.model_validate(r) for r in rows]
+
+
+def _ip_sort_key(ip: str) -> tuple[int, int, str]:
+    """Numeric address order (IPv4 before IPv6); anything unparseable last."""
+    try:
+        address = ipaddress.ip_address(ip.split("%", 1)[0])
+    except ValueError:
+        return (2, 0, ip)
+    return (0 if address.version == 4 else 1, int(address), ip)
+
+
+@router.get("/scans/{scan_id}/ports", response_model=list[PortServiceOut])
+async def list_scan_ports(
+    scan: Scan = Depends(get_owned_scan),
+    session: AsyncSession = Depends(get_session),
+) -> list[PortServiceOut]:
+    """Open ports and the services behind them, by address (numeric order) and
+    port. Empty for a scan that did not use port scanning."""
+    rows = (
+        (await session.execute(select(PortService).where(PortService.scan_id == scan.id)))
+        .scalars()
+        .all()
+    )
+    ordered = sorted(rows, key=lambda r: (_ip_sort_key(r.ip), r.port, r.protocol))
+    return [PortServiceOut.model_validate(r) for r in ordered]
 
 
 @router.get("/scans/{scan_id}/assets", response_model=list[ScanAssetOut])

@@ -6,6 +6,7 @@ Same "build, don't persist" convention as access_control_adapter.py.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 from datetime import UTC, datetime
 
@@ -16,6 +17,7 @@ from sentinel_db.models import (
     Asset,
     DiscoveredPath,
     Finding,
+    PortService,
     Report,
     Scan,
     ScanAuthorisation,
@@ -27,11 +29,21 @@ from sentinel_reporter import (
     ReportEndpoint,
     ReportFinding,
     ReportPath,
+    ReportPort,
     ScanReport,
 )
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+
+
+def _ip_key(ip: str) -> tuple[int, int, str]:
+    """Numeric address order (IPv4 first); anything unparseable last."""
+    try:
+        address = ipaddress.ip_address(ip.split("%", 1)[0])
+    except ValueError:
+        return (2, 0, ip)
+    return (0 if address.version == 4 else 1, int(address), ip)
 
 
 async def build_scan_report(
@@ -115,6 +127,27 @@ async def build_scan_report(
         ),
         key=lambda p: p.verdict != "confirmed",
     )
+    port_rows = (
+        (await session.execute(select(PortService).where(PortService.scan_id == scan.id)))
+        .scalars()
+        .all()
+    )
+    report_ports = [
+        ReportPort(
+            ip=p.ip,
+            hosts=list(p.hosts or []),
+            port=p.port,
+            protocol=p.protocol,
+            state=p.state,
+            service=p.service,
+            product=p.product,
+            version=p.version,
+            confidence=p.confidence,
+            found_by=p.found_by,
+            cdn=p.cdn,
+        )
+        for p in sorted(port_rows, key=lambda r: (_ip_key(r.ip), r.port, r.protocol))
+    ]
     authorisation_row = (
         await session.execute(select(ScanAuthorisation).where(ScanAuthorisation.scan_id == scan.id))
     ).scalar_one_or_none()
@@ -152,6 +185,15 @@ async def build_scan_report(
         else:
             checks_skipped.append("directory and file brute force (active tool)")
 
+    if "port_scan" in scan_options.active_tools(scan.options):
+        port_stats = next(
+            (p.stats_json or {} for p in scan.phases if p.name.value == "recon"), {}
+        ).get("ports")
+        if port_stats and port_stats.get("ips_scanned", 0) > 0:
+            checks_run.append("port scanning and service detection (active tool)")
+        else:
+            checks_skipped.append("port scanning and service detection (active tool)")
+
     return ScanReport(
         scan_id=str(scan.id),
         target_root_domain=target.root_domain,
@@ -166,6 +208,7 @@ async def build_scan_report(
         checks_run=checks_run,
         checks_skipped=checks_skipped,
         paths=report_paths,
+        ports=report_ports,
         authorisation=report_authorisation,
     )
 

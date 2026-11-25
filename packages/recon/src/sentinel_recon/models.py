@@ -45,6 +45,10 @@ class ToolRun:
     stderr: str = ""
     results_count: int = 0
     skip_reason: str | None = None
+    # A second output kept besides stdout/stderr, e.g. nmap's normal-format
+    # report (-oN), and what to call it in the dashboard.
+    extra_output: str = ""
+    extra_output_label: str | None = None
 
     @property
     def duration_ms(self) -> int | None:

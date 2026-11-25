@@ -129,6 +129,8 @@ async def scan_with_authorisation(
     authorised: bool = True,
     tools: list[str] | None = None,
     username: str = "alice",
+    all_ports_confirmed: bool = False,
+    target_environment: str = "production",
 ) -> tuple[Scan, Target]:
     org = Organization(name="D", slug=f"d-{uuid.uuid4().hex[:8]}", wrapped_data_key=b"k")
     session.add(org)
@@ -157,8 +159,8 @@ async def scan_with_authorisation(
                 client_name="Acme Ltd",
                 target_name=root_domain,
                 tools=tools or ["dir_bruteforce"],
-                all_ports_confirmed=False,
-                target_environment="production",
+                all_ports_confirmed=all_ports_confirmed,
+                target_environment=target_environment,
                 options_snapshot={},
             )
         )

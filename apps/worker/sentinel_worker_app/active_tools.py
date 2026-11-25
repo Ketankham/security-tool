@@ -84,3 +84,19 @@ async def authorising_user(session: AsyncSession, scan: Scan) -> str:
         await session.execute(select(ScanAuthorisation).where(ScanAuthorisation.scan_id == scan.id))
     ).scalar_one_or_none()
     return (row.username or "").strip() if row is not None and row.username else "unknown"
+
+
+async def authorisation_row(session: AsyncSession, scan: Scan) -> ScanAuthorisation | None:
+    """The scan's authorisation record, if any."""
+    return (
+        await session.execute(select(ScanAuthorisation).where(ScanAuthorisation.scan_id == scan.id))
+    ).scalar_one_or_none()
+
+
+def nmap_environment(scan: Scan, record: ScanAuthorisation | None) -> str:
+    """Which nmap script set to use: "staging" only when BOTH the scan's options
+    and its authorisation record say staging; anything else is "production"
+    (the safer set)."""
+    from_options = scan_options.resolve_target_environment(scan.options)
+    from_record = (record.target_environment if record is not None else None) or "production"
+    return "staging" if from_options == "staging" and from_record == "staging" else "production"

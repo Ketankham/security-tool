@@ -75,6 +75,26 @@ def test_tool_run_records_redact_and_cap():
     assert records[1].skip_reason == "not installed"
 
 
+def test_tool_run_records_carry_the_second_output_redacted_and_capped():
+    secret = "Zx9Qk2LmPv7RtW4yUb8N"
+    runs = [
+        ToolRun(
+            tool="nmap",
+            status="ok",
+            extra_output=f"22/tcp open ssh\nAuthorization: Bearer {secret}\n",
+            extra_output_label="nmap normal output (-oN)",
+        ),
+        ToolRun(tool="naabu", status="ok"),
+        ToolRun(tool="nmap", status="ok", extra_output="y" * 600_000, extra_output_label="x" * 80),
+    ]
+    first, plain, huge = recon_adapter.tool_run_records(uuid.uuid4(), runs, phase="recon")
+    assert "22/tcp open ssh" in first.extra_output and secret not in first.extra_output
+    assert first.extra_output_label == "nmap normal output (-oN)"
+    assert plain.extra_output == "" and plain.extra_output_label is None
+    assert len(huge.extra_output) == 512 * 1024
+    assert huge.extra_output_label == "x" * 50  # fits the column
+
+
 def test_log_recon_describes_runs_hosts_and_notes():
     class Log:
         def __init__(self):

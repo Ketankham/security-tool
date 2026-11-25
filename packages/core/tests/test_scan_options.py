@@ -41,8 +41,8 @@ def test_implemented_tools_are_a_subset_of_the_known_ones():
     assert set(scan_options.ACTIVE_TOOL_LABELS) == set(scan_options.ACTIVE_TOOL_KEYS)
 
 
-def test_directory_brute_force_is_the_implemented_tool_in_this_build():
-    assert scan_options.IMPLEMENTED_ACTIVE_TOOLS == ("dir_bruteforce",)
+def test_all_three_active_tools_are_implemented_in_this_build():
+    assert scan_options.IMPLEMENTED_ACTIVE_TOOLS == ("dir_bruteforce", "port_scan", "all_ports")
 
 
 def test_resolvers_fall_back_to_the_safe_defaults():

@@ -297,7 +297,7 @@ async def test_the_proxy_secret_is_read_from_sentinel_proxy_secret(monkeypatch):
 async def test_whoami_reports_the_available_tools_and_the_statement(identity_env):
     async with await _client() as client:
         body = (await client.get("/whoami", headers=GOOD)).json()
-    assert body["available_tools"] == ["dir_bruteforce"]  # the one active tool in this build
+    assert body["available_tools"] == ["dir_bruteforce", "port_scan", "all_ports"]
     assert body["statement"]["version"] == "1"
     assert "{client}" in body["statement"]["template"]
     assert "{target}" in body["statement"]["template"]

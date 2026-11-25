@@ -9,7 +9,7 @@ import uuid
 from sentinel_core.redact import redact_text
 from sentinel_core.scope_guard import ScopeGuard
 from sentinel_db.models import Asset, ToolRunRecord
-from sentinel_db.models.tool_run import MAX_STDERR_CHARS, MAX_STDOUT_CHARS
+from sentinel_db.models.tool_run import MAX_EXTRA_CHARS, MAX_STDERR_CHARS, MAX_STDOUT_CHARS
 from sentinel_recon import ReconResult, ToolRun
 
 from .scan_log import NullScanLog, ScanLog
@@ -43,6 +43,7 @@ def tool_run_records(
     for i, run in enumerate(runs):
         stdout, stdout_cut = _cap(run.stdout, MAX_STDOUT_CHARS)
         stderr, stderr_cut = _cap(run.stderr, MAX_STDERR_CHARS)
+        extra, _ = _cap(run.extra_output, MAX_EXTRA_CHARS)
         records.append(
             ToolRunRecord(
                 scan_id=scan_id,
@@ -64,6 +65,8 @@ def tool_run_records(
                 stderr=stderr,
                 stdout_truncated=stdout_cut,
                 stderr_truncated=stderr_cut,
+                extra_output=extra,
+                extra_output_label=(run.extra_output_label or None) and run.extra_output_label[:50],
             )
         )
     return records

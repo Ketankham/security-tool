@@ -32,6 +32,7 @@ import json
 import re
 import uuid
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 import structlog
 from playwright.async_api import Browser, async_playwright
@@ -57,21 +58,28 @@ from sentinel_db.models import (
     ScanPhase,
     ScopeRule,
     Target,
+    ToolRunRecord,
     TranscriptRecord,
 )
 from sentinel_recon import run_recon
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from . import recon_adapter
 from .access_control_adapter import AccessControlStats, run_access_control_and_verify
-from .active_tools import authorised_tools, authorising_user
+from .active_tools import (
+    authorisation_row,
+    authorised_tools,
+    authorising_user,
+    nmap_environment,
+)
 from .auth_adapter import establish_persona
 from .cancel import CancelWatch, ScanCancelled, run_until_cancelled
 from .config import Settings, get_settings
 from .dir_bruteforce_adapter import DirStats, run_dir_bruteforce
 from .passive_adapter import PassiveStats, run_passive_and_verify
+from .ports_adapter import PortStats, run_ports
 from .report_adapter import build_scan_report, persist_report
 from .scan_log import NULL_LOG, NullScanLog, ScanLog
 from .substrate import (
@@ -334,6 +342,7 @@ async def _run_crawling(
     scan_log: ScanLog | NullScanLog = NULL_LOG,
     extra_seeds: list[str] | None = None,
     path_seeds: list[str] | None = None,
+    service_seeds: list[str] | None = None,
 ) -> list[SurfaceMap]:
     """``root_url`` defaults to the target's own root URL; tests pass an
     explicit one — see _run_auth_establishing's docstring for why."""
@@ -394,6 +403,7 @@ async def _run_crawling(
         *landing_pages.values(),
         *(extra_seeds or []),
         *(path_seeds or []),
+        *(service_seeds or []),
     ]
     if extra_seeds:
         scan_log.add(
@@ -407,6 +417,13 @@ async def _run_crawling(
             "crawl",
             f"Also starting from {len(path_seeds)} page(s) found by directory brute force: "
             f"{', '.join(path_seeds)} (they share the page budget).",
+            persona="Logged-out visitor",
+        )
+    if service_seeds:
+        scan_log.add(
+            "crawl",
+            f"Also starting from {len(service_seeds)} web service(s) that port scanning found "
+            f"on non-standard ports: {', '.join(service_seeds)} (they share the page budget).",
             persona="Logged-out visitor",
         )
     scan_log.add(
@@ -539,7 +556,8 @@ async def _run_active_tools(
     The authorisation check is the gate: a tool runs only when this scan's
     authorisation record (a named, signed-in user) covers it. Returns the
     authorised set. A tool that is authorised but not implemented in this
-    version (port scanning) is reported as not run, never silently dropped."""
+    build is reported as not run, never silently dropped (every tool in
+    ACTIVE_TOOL_KEYS is implemented today; the branch is for the next one)."""
     authorised = await authorised_tools(session, scan, scan_log)
     for tool in scan_options_mod.ACTIVE_TOOL_KEYS:
         if tool not in authorised:
@@ -567,6 +585,8 @@ async def _recover_session(session: AsyncSession, scan_id: uuid.UUID, target_id:
 
 # Pages found by directory brute force that the crawl also starts from.
 MAX_PATH_SEEDS = 20
+# Web services on non-standard ports found by port scanning that the crawl also starts from.
+MAX_SERVICE_SEEDS = 5
 
 
 def _in_scope_path_seeds(stats: DirStats | None, scope_guard) -> list[str]:
@@ -579,6 +599,89 @@ def _in_scope_path_seeds(stats: DirStats | None, scope_guard) -> list[str]:
         if url not in seeds and scope_guard.evaluate(method="GET", url=url).allowed:
             seeds.append(url)
     return seeds[:MAX_PATH_SEEDS]
+
+
+async def _in_scope_service_seeds(
+    stats: PortStats | None, scope_guard, settings: Settings
+) -> list[str]:
+    """Web services port scanning found on unusual ports, as crawl start pages.
+    Each one is re-checked here against the scope rules and the address guard:
+    the crawl is the last place a stray URL could slip through."""
+    if stats is None:
+        return []
+    address_guard = build_address_guard(settings)
+    seeds: list[str] = []
+    for url in stats.web_seeds:
+        if url in seeds or not scope_guard.evaluate(method="GET", url=url).allowed:
+            continue
+        host = urlsplit(url).hostname or ""
+        if await address_guard.check(host) is not None:
+            continue
+        seeds.append(url)
+    return seeds[:MAX_SERVICE_SEEDS]
+
+
+async def _next_tool_seq(session: AsyncSession, scan_id: uuid.UUID) -> int:
+    """The next free ToolRunRecord.seq of the scan (what is committed so far)."""
+    top = (
+        await session.execute(
+            select(func.coalesce(func.max(ToolRunRecord.seq), 0)).where(
+                ToolRunRecord.scan_id == scan_id
+            )
+        )
+    ).scalar_one()
+    return int(top) + 1
+
+
+async def _run_ports_step(
+    session: AsyncSession,
+    *,
+    scan: Scan,
+    target: Target,
+    scope_rules: list[ScopeRule],
+    recon_result,
+    recon_profile: str,
+    all_ports_authorised: bool,
+    seq: int,
+    settings: Settings,
+    scan_log: ScanLog | NullScanLog,
+    watch: CancelWatch,
+) -> PortStats | None:
+    """Port scanning and service detection on the addresses recon found. A bug
+    in the step costs the step, never the scan (a cancel still ends the scan)."""
+    scan_id, target_id = scan.id, target.id  # ids first: a failed flush expires every object
+    scope_guard = build_scope_guard(target, scope_rules)
+    try:
+        record = await authorisation_row(session, scan)
+        return await run_ports(
+            session,
+            scan,
+            target,
+            recon_result,
+            scope_guard,
+            recon_profile,
+            scan_options_mod.PORT_PACKETS_PER_SECOND[scan_options_mod.resolve_speed(scan.options)],
+            watch,
+            scan_log,
+            seq,
+            authorised_by=await authorising_user(session, scan),
+            all_ports_authorised=all_ports_authorised,
+            environment=nmap_environment(scan, record),
+            allow_private=settings.allow_private_addresses,
+        )
+    except ScanCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 — a broken tool step must not end the scan
+        log.error("scan_runner.ports_crashed", scan_id=str(scan_id), exc_info=True)
+        await _recover_session(session, scan_id, target_id)
+        note = (
+            "Port scanning crashed and was skipped: "
+            f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"
+        )
+        scan_log.add("ports", note, level="error")
+        scan.is_degraded = True
+        scan.degraded_reasons = [*scan.degraded_reasons, note]
+        return None
 
 
 async def _run_dir_bruteforce_step(
@@ -820,6 +923,28 @@ async def _run_scan(scan_id: str, scan_log: ScanLog, watch: CancelWatch) -> None
         # them can then roll back its own work without taking recon's rows along.
         await session.commit()
         authorised = await _run_active_tools(session, scan, scan_log, watch)
+        # Flow: ports -> directory -> crawl. Port scanning comes first so a web
+        # service on an unusual port is known before the crawl starts.
+        next_seq = len(recon_result.tool_runs) + 1
+        port_stats: PortStats | None = None
+        if "port_scan" in authorised and "port_scan" in scan_options_mod.IMPLEMENTED_ACTIVE_TOOLS:
+            await watch.raise_if_cancelled()
+            port_stats = await _run_ports_step(
+                session,
+                scan=scan,
+                target=target,
+                scope_rules=scope_rules,
+                recon_result=recon_result,
+                recon_profile=recon_profile,
+                all_ports_authorised="all_ports" in authorised
+                and "all_ports" in scan_options_mod.IMPLEMENTED_ACTIVE_TOOLS,
+                seq=next_seq,
+                settings=get_settings(),
+                scan_log=scan_log,
+                watch=watch,
+            )
+            # The step committed its runs as it went (even when it crashed part-way).
+            next_seq = await _next_tool_seq(session, scan.id)
         dir_stats: DirStats | None = None
         if "dir_bruteforce" in authorised and "dir_bruteforce" in (
             scan_options_mod.IMPLEMENTED_ACTIVE_TOOLS
@@ -832,7 +957,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog, watch: CancelWatch) -> None
                 recon_result=recon_result,
                 recon_profile=recon_profile,
                 speed_rps=speed_rps,
-                seq=len(recon_result.tool_runs) + 1,
+                seq=next_seq,
                 settings=get_settings(),
                 scan_log=scan_log,
                 watch=watch,
@@ -842,6 +967,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog, watch: CancelWatch) -> None
         )
         recon_root_url = recon_adapter.crawl_root_url(recon_result, root_domain=target.root_domain)
         path_seeds = _in_scope_path_seeds(dir_stats, recon_guard)
+        service_seeds = await _in_scope_service_seeds(port_stats, recon_guard, get_settings())
 
         await _finish_phase(
             session,
@@ -857,6 +983,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog, watch: CancelWatch) -> None
                 "tool_availability": recon_result.tool_availability,
                 "wildcard_dns_suspected": recon_result.wildcard_dns_suspected,
                 "notes": recon_result.notes,
+                **({"ports": port_stats.as_dict()} if port_stats is not None else {}),
                 **({"dir_bruteforce": dir_stats.as_dict()} if dir_stats is not None else {}),
             },
         )
@@ -1006,6 +1133,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog, watch: CancelWatch) -> None
                             scan_log=scan_log,
                             extra_seeds=extra_seeds,
                             path_seeds=path_seeds,
+                            service_seeds=service_seeds,
                         ),
                         watch,
                     )
