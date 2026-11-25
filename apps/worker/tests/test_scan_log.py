@@ -144,7 +144,11 @@ async def test_a_scan_leaves_a_readable_secret_free_trail(db_engine, monkeypatch
                 },
             )
         )
-        scan = Scan(target_id=target.id, options={"speed": "gentle", "depth": "quick"})
+        scan = Scan(
+            target_id=target.id,
+            options={"speed": "gentle", "depth": "quick"},
+            requested_by="alice",
+        )
         session.add(scan)
         await session.commit()
 
@@ -161,6 +165,7 @@ async def test_a_scan_leaves_a_readable_secret_free_trail(db_engine, monkeypatch
     rows = await _events(db_engine, scan.id)
     text = "\n".join(f"[{r.stage}] {r.message}" for r in rows)
     assert "Scan started for acme.test (speed 2 requests/second, up to 30 pages" in text
+    assert "started by: manual; requested by: alice)" in text
     assert "[recon] subfinder is not installed" in text
     assert "Logging in as 'Admin'" in text
     assert "Login failed: Login blocked" in text

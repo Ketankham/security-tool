@@ -3,10 +3,13 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { BASE_PATH, api, clearOrgId, getOrgId } from "@/lib/api";
+import { useWhoami } from "@/lib/useWhoami";
 
 export function TopBar() {
   const [orgId, setOrg] = useState<string | null>(null);
   const [orgName, setOrgName] = useState<string | null>(null);
+  // Hidden quietly when the API has no identity (or /whoami fails).
+  const { whoami } = useWhoami();
 
   useEffect(() => {
     setOrg(getOrgId());
@@ -36,6 +39,11 @@ export function TopBar() {
           Sentinel<span>.</span>
         </Link>
         <div className="spacer" />
+        {whoami?.username && (
+          <span className="user-chip" title="Verified by the sign-in page in front of Sentinel">
+            Signed in as <strong>{whoami.username}</strong>
+          </span>
+        )}
         {orgId && (
           <>
             <span className="org-chip" title={`Organization id: ${orgId}`}>

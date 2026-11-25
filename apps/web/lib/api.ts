@@ -13,17 +13,19 @@ import type {
   OwnershipMethod,
   OwnershipVerifyResult,
   Persona,
-  ReconProfile,
   Scan,
-  ScanDepth,
   ScanAsset,
+  ScanAuthorisation,
+  ScanCreateBody,
+  ScanEstimate,
+  ScanRetryBody,
   ScanEndpoint,
   ToolRun,
   ScanEventsPage,
-  ScanSpeed,
   ScopeRule,
   Target,
   TranscriptDoc,
+  Whoami,
 } from "./types";
 import type { LoginRecipe } from "@/components/LoginRecipeFields";
 
@@ -91,12 +93,16 @@ export class ApiError extends Error {
 
 async function request<T>(
   path: string,
-  opts: { method?: string; body?: unknown; org?: boolean } = {},
+  opts: { method?: string; body?: unknown; org?: boolean | "optional" } = {},
 ): Promise<T> {
   const { method = "GET", body, org = true } = opts;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
 
-  if (org) {
+  if (org === "optional") {
+    // Endpoints that don't need an organization: send it if one is chosen.
+    const orgId = getOrgId();
+    if (orgId) headers["X-Org-Id"] = orgId;
+  } else if (org) {
     const orgId = getOrgId();
     if (!orgId) throw new ApiError(401, "No organization selected.");
     headers["X-Org-Id"] = orgId;
@@ -125,7 +131,9 @@ async function request<T>(
   }
 
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  // 202 Accepted (cancel) may come with no body.
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 export const api = {
@@ -196,16 +204,31 @@ export const api = {
   // Scans.
   listScans: (targetId: string) => request<Scan[]>(`/targets/${targetId}/scans`),
   getScan: (scanId: string) => request<Scan>(`/scans/${scanId}`),
-  createScan: (
-    targetId: string,
-    options: { speed?: ScanSpeed; depth?: ScanDepth; recon_profile?: ReconProfile } = {},
-    triggeredBy = "manual",
-  ) =>
+  createScan: (targetId: string, options: ScanCreateBody = {}, triggeredBy = "manual") =>
     request<Scan>(`/targets/${targetId}/scans`, {
       method: "POST",
       body: { triggered_by: triggeredBy, ...options },
     }),
-  retryScan: (scanId: string) => request<Scan>(`/scans/${scanId}/retry`, { method: "POST" }),
+  // No body: retry as before. Scans that used active tools answer 409 unless
+  // the body re-confirms the authorisation or drops the tools.
+  retryScan: (scanId: string, body?: ScanRetryBody) =>
+    request<Scan>(`/scans/${scanId}/retry`, { method: "POST", body }),
+  // Cooperative: 202 means "asked to stop"; the scan finishes cancelling shortly.
+  // 409 means it had already finished.
+  cancelScan: (scanId: string) =>
+    request<unknown>(`/scans/${scanId}/cancel`, { method: "POST" }),
+  // The "I'm authorised" record for a scan (404 when it used no active tools).
+  getScanAuthorisation: (scanId: string) =>
+    request<ScanAuthorisation>(`/scans/${scanId}/authorisation`),
+
+  // Who is signed in (via the sign-in proxy) and which active tools exist.
+  whoami: () => request<Whoami>("/whoami", { org: "optional" }),
+  // Worst-case duration/request estimate for a set of scan options.
+  scanEstimate: (params: Record<string, string | boolean>) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) q.set(k, String(v));
+    return request<ScanEstimate>(`/scan-estimate?${q.toString()}`, { org: "optional" });
+  },
 
   // What a scan did (activity log, found endpoints, evidence).
   listScanEvents: (scanId: string, afterSeq = 0, limit = 2000) =>

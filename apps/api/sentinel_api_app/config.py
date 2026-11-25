@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,6 +40,22 @@ class Settings(BaseSettings):
     # confines every request to the target's own hosts + scope rules.
     # Must match the worker's setting.
     require_ownership_verification: bool = True
+
+    # Who is calling (see identity.py). In production every request reaches the
+    # API through the Caddy sign-in proxy, which sets X-Sentinel-User to the
+    # signed-in username and X-Sentinel-Proxy-Secret to a shared secret; the
+    # API trusts the user header only when that secret matches.
+    #   REQUIRE_IDENTITY=true     refuse (401) any request without a verified identity
+    #                             except /healthz; needs SENTINEL_PROXY_SECRET
+    #   SENTINEL_PROXY_SECRET     the shared secret the proxy sends
+    #   DEV_IDENTITY=<username>   local development only: pretend every request is
+    #                             this user. Refused at startup when ENVIRONMENT=production.
+    require_identity: bool = False
+    proxy_shared_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("SENTINEL_PROXY_SECRET", "proxy_shared_secret"),
+    )
+    dev_identity: str = ""
 
     # Clerk (control-plane auth). Unset in dev — see app.deps.get_current_org
     # for the stub that stands in until this is wired.

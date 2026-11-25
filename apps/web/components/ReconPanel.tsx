@@ -22,6 +22,8 @@ const RUN_TONE: Record<string, string> = {
   not_installed: "tone-bad",
   failed: "tone-bad",
   timed_out: "tone-bad",
+  stopped: "tone-bad",
+  cancelled: "tone-muted",
 };
 
 const SOURCE_NAMES: Record<string, string> = {
@@ -223,7 +225,10 @@ export function ReconPanel({ scanId, running }: { scanId: string; running: boole
             <strong>{r.tool}</strong> {r.version && <span className="mono">{r.version}</span>}{" "}
             <span className={`badge ${RUN_TONE[r.status] ?? "tone-muted"}`}>{r.status.replace("_", " ")}</span>{" "}
             <span className="hint">
-              {r.status === "skipped" || r.status === "not_installed"
+              {r.status === "skipped" ||
+              r.status === "not_installed" ||
+              r.status === "stopped" ||
+              r.status === "cancelled"
                 ? r.skip_reason
                 : `${r.results_count} result(s)${r.duration_ms !== null ? `, ${duration(r.duration_ms)}` : ""}${r.exit_code !== null ? `, exit ${r.exit_code}` : ""}`}
             </span>

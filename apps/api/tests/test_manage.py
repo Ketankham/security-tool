@@ -188,7 +188,17 @@ async def test_scan_speed_and_depth_are_stored_and_reused_by_retry(
     assert resp.status_code == 201, resp.text
     scan = resp.json()
     # Not chosen: the recon profile takes its default (light).
-    assert scan["options"] == {"speed": "gentle", "depth": "deep", "recon_profile": "light"}
+    assert scan["options"] == {
+        "speed": "gentle",
+        "depth": "deep",
+        "recon_profile": "light",
+        # every option is stored; the active tools default to off
+        "dir_bruteforce": False,
+        "port_scan": False,
+        "all_ports": False,
+        "wordlist": "sentinel-core",
+        "target_environment": "production",
+    }
 
     bad = await client.post(
         f"/targets/{target['id']}/scans", json={"speed": "ludicrous"}, headers=headers
@@ -201,4 +211,4 @@ async def test_scan_speed_and_depth_are_stored_and_reused_by_retry(
         row.state = ScanState.FAILED
         await session.commit()
     retried = (await client.post(f"/scans/{scan['id']}/retry", headers=headers)).json()
-    assert retried["options"] == {"speed": "gentle", "depth": "deep", "recon_profile": "light"}
+    assert retried["options"] == scan["options"]

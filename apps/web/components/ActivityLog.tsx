@@ -14,6 +14,8 @@ const STAGE_LABEL: Record<string, string> = {
   scan: "Scan",
   scope: "Scope",
   recon: "Recon",
+  dir_bruteforce: "Directory brute force",
+  ports: "Ports & services",
   auth: "Logins",
   crawl: "Crawl",
   surface: "Surface",

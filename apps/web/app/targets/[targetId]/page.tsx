@@ -7,6 +7,7 @@ import { OrgGate } from "../../OrgGate";
 import { ApiError, api } from "@/lib/api";
 import { usePoll } from "@/lib/usePoll";
 import { scanStatus } from "@/lib/scan";
+import { useWhoami } from "@/lib/useWhoami";
 import type {
   LoginTestResult,
   ScanDepth,
@@ -18,6 +19,7 @@ import type {
   Scan,
   ScopeRule,
   Target,
+  Whoami,
 } from "@/lib/types";
 import {
   EMPTY_LOGIN,
@@ -27,6 +29,13 @@ import {
   loginFormFromRecipe,
   type LoginForm,
 } from "@/components/LoginRecipeFields";
+import {
+  ActiveToolsFields,
+  activeToolsPayload,
+  activeToolsProblem,
+  initialActiveTools,
+  type ActiveToolsState,
+} from "@/components/ActiveToolsFields";
 
 export default function TargetPage({ params }: { params: Promise<{ targetId: string }> }) {
   const { targetId } = use(params);
@@ -1023,6 +1032,8 @@ function ScansCard({ target }: { target: Target }) {
   const [speed, setSpeed] = useState<ScanSpeed>("normal");
   const [depth, setDepth] = useState<ScanDepth>("standard");
   const [reconProfile, setReconProfile] = useState<ReconProfile>("light");
+  const [activeTools, setActiveTools] = useState<ActiveToolsState>(() => initialActiveTools(target));
+  const { whoami } = useWhoami();
   const { data: personas } = usePoll<Persona[]>(() => api.listPersonas(target.id), 30000);
   const { data: rules } = usePoll<ScopeRule[]>(() => api.listScopeRules(target.id), 30000);
 
@@ -1030,7 +1041,12 @@ function ScansCard({ target }: { target: Target }) {
     setBusy(true);
     setStartErr(null);
     try {
-      const scan = await api.createScan(target.id, { speed, depth, recon_profile: reconProfile });
+      const scan = await api.createScan(target.id, {
+        speed,
+        depth,
+        recon_profile: reconProfile,
+        ...activeToolsPayload(activeTools, { whoami, reconProfile }),
+      });
       router.push(`/scans/${scan.id}`);
     } catch (e) {
       setStartErr(e instanceof ApiError ? e.detail : String(e));
@@ -1065,6 +1081,9 @@ function ScansCard({ target }: { target: Target }) {
             setReconProfile={setReconProfile}
             setSpeed={setSpeed}
             setDepth={setDepth}
+            whoami={whoami}
+            activeTools={activeTools}
+            setActiveTools={setActiveTools}
             busy={busy}
             onStart={run}
             onCancel={() => setConfirming(false)}
@@ -1089,6 +1108,7 @@ function ScansCard({ target }: { target: Target }) {
                   <div className="title mono">{s.id.slice(0, 8)}</div>
                   <div className="sub">
                     {s.triggered_by} · {new Date(s.started_at ?? s.created_at).toLocaleString()}
+                    {s.requested_by ? ` · by ${s.requested_by}` : ""}
                   </div>
                   {s.fail_reason && (
                     <div className="sub" style={{ color: "var(--bad)" }}>{s.fail_reason}</div>
@@ -1138,6 +1158,9 @@ function RunScanPanel(props: {
   setReconProfile: (p: ReconProfile) => void;
   setSpeed: (s: ScanSpeed) => void;
   setDepth: (d: ScanDepth) => void;
+  whoami: Whoami | null;
+  activeTools: ActiveToolsState;
+  setActiveTools: (s: ActiveToolsState) => void;
   busy: boolean;
   onStart: () => void;
   onCancel: () => void;
@@ -1147,6 +1170,7 @@ function RunScanPanel(props: {
   const failing = logins.filter((p) => !p.is_available);
   const excluded = rules.filter((r) => r.effect === "exclude");
   const pages = DEPTHS.find((d) => d.value === depth)!.pages;
+  const toolsProblem = activeToolsProblem(props.activeTools, { whoami: props.whoami, reconProfile });
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12 }}>
       <div className="row">
@@ -1185,6 +1209,15 @@ function RunScanPanel(props: {
           </select>
         </div>
       </div>
+      <ActiveToolsFields
+        target={target}
+        whoami={props.whoami}
+        reconProfile={reconProfile}
+        speed={speed}
+        depth={depth}
+        value={props.activeTools}
+        onChange={props.setActiveTools}
+      />
       <p className="hint" style={{ marginTop: 8 }}>
         Crawls <span className="mono">{target.root_domain}</span> and its subdomains as a logged-out
         visitor{logins.length ? ` and as ${logins.map((p) => p.label).join(", ")}` : ""}, up to {pages}{" "}
@@ -1198,11 +1231,22 @@ function RunScanPanel(props: {
         </div>
       )}
       <div className="row">
-        <button className="btn-primary" disabled={props.busy} onClick={props.onStart}>
+        <button
+          className="btn-primary"
+          disabled={props.busy || !!toolsProblem}
+          title={toolsProblem ?? undefined}
+          aria-describedby={toolsProblem ? "start-problem" : undefined}
+          onClick={props.onStart}
+        >
           {props.busy ? "Starting…" : "Start scan"}
         </button>
         <button type="button" onClick={props.onCancel}>Cancel</button>
       </div>
+      {toolsProblem && (
+        <div id="start-problem" className="hint" style={{ marginTop: 6 }}>
+          {toolsProblem}
+        </div>
+      )}
     </div>
   );
 }

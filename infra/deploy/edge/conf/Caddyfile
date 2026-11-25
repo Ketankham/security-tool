@@ -9,14 +9,30 @@
 #     runs entirely over 443 (the HTTP-01 challenge would need port 80);
 #   * does not redirect http->https (that would need port 80 too).
 #
+#   https://<domain>/security/api/healthz -> Sentinel API   (the ONLY unauthenticated path)
 #   https://<domain>/security/api/*  -> Sentinel API   (127.0.0.1:8100, prefix stripped)
 #   https://<domain>/security[/*]    -> Sentinel web   (127.0.0.1:3100, prefix kept: Next basePath)
 #   https://<domain>/anything-else   -> redirect to http://<domain>/... (the app that owns port 80)
 #
 # The accounting app stays on http://<domain>:8000/ and is not proxied here.
 #
-# No password on /security: an internal tool for one small team (decided
-# 2026-11-13). Add `basic_auth` here if that ever changes.
+# Access control: everything under /security (dashboard and API) needs a
+# per-person login (HTTP basic auth). The logins live in
+# /opt/sentinel/dashboard-users (bcrypt hashes only) and are rendered into
+# /etc/caddy/sentinel-access.caddy by infra/deploy/manage-users.sh (also run by
+# remote-deploy.sh). That file is imported by EXACT path on purpose: if it is
+# missing, Caddy refuses to load this config instead of serving the dashboard
+# unprotected (a glob import would silently match nothing). The deploy also
+# refuses a users file with no valid login, because an empty basic_auth block
+# validates fine and would let nobody in.
+#
+# Identity: Caddy sets X-Sentinel-User to the authenticated username and
+# X-Sentinel-Proxy-Secret to $SENTINEL_PROXY_SECRET on every request it proxies,
+# replacing whatever the client sent. The API trusts X-Sentinel-User only when
+# the secret matches, so a request that reaches the API without passing through
+# this file (for example straight to 127.0.0.1:8100 from another container) has
+# no identity. The client's own Authorization header is dropped so the
+# dashboard password never travels any further than Caddy.
 {
 	http_port 8089
 	auto_https disable_redirects
@@ -31,20 +47,47 @@
 
 	encode zstd gzip
 
-	# `route` keeps these in written order (most specific first) instead of
-	# Caddy's automatic directive sorting.
+	# ONE `route` block, kept in written order. Caddy would otherwise sort
+	# `basic_auth` ahead of every `handle`, which makes an unauthenticated
+	# exemption for /healthz impossible; inside a single route the order below
+	# is the order that runs.
 	route {
+		# 1. The only unauthenticated path: liveness. Matched exactly, so
+		#    /security/api/healthz/ and /security/api/healthz/../scans are NOT
+		#    exempt. Identity headers are stripped: nothing here is signed in.
+		handle /security/api/healthz {
+			uri strip_prefix /security/api
+			reverse_proxy 127.0.0.1:8100 {
+				header_up -X-Sentinel-User
+				header_up -X-Sentinel-Proxy-Secret
+				header_up -Authorization
+			}
+		}
+
+		# 2 + 3. Everything under /security needs a login.
+		@sentinel_protected path /security /security/*
+		import /etc/caddy/sentinel-access.caddy
+
+		# 4. API
 		handle_path /security/api/* {
-			reverse_proxy 127.0.0.1:8100
+			reverse_proxy 127.0.0.1:8100 {
+				header_up X-Sentinel-User {http.auth.user.id}
+				header_up X-Sentinel-Proxy-Secret {$SENTINEL_PROXY_SECRET}
+				header_up -Authorization
+			}
 		}
 
-		@sentinel_web path /security /security/*
-		handle @sentinel_web {
-			reverse_proxy 127.0.0.1:3100
+		# 5. Web
+		handle @sentinel_protected {
+			reverse_proxy 127.0.0.1:3100 {
+				header_up X-Sentinel-User {http.auth.user.id}
+				header_up X-Sentinel-Proxy-Secret {$SENTINEL_PROXY_SECRET}
+				header_up -Authorization
+			}
 		}
 
-		# Everything else on this domain belongs to whatever serves port 80;
-		# send HTTPS visitors there rather than guessing.
+		# 6. Everything else on this domain belongs to whatever serves port 80;
+		#    send HTTPS visitors there rather than guessing.
 		handle {
 			redir http://{host}{uri} 302
 		}

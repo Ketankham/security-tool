@@ -134,6 +134,21 @@ export interface ScanPhase {
 export type ScanSpeed = "gentle" | "normal" | "fast";
 export type ScanDepth = "quick" | "standard" | "deep";
 export type ReconProfile = "light" | "full";
+export type Wordlist = "sentinel-core" | "seclists-common";
+export type TargetEnvironment = "production" | "staging";
+export type ActiveToolKey = "dir_bruteforce" | "port_scan" | "all_ports";
+
+export interface ScanOptions {
+  speed?: ScanSpeed;
+  depth?: ScanDepth;
+  recon_profile?: ReconProfile;
+  // Active tools (need an identity and an authorisation record).
+  dir_bruteforce?: boolean;
+  port_scan?: boolean;
+  all_ports?: boolean;
+  wordlist?: Wordlist;
+  target_environment?: TargetEnvironment;
+}
 
 export interface Scan {
   id: string;
@@ -143,13 +158,82 @@ export interface Scan {
   is_degraded: boolean;
   degraded_reasons: string[];
   fail_reason: string | null;
-  options: { speed?: ScanSpeed; depth?: ScanDepth; recon_profile?: ReconProfile };
+  options: ScanOptions;
+  // Who launched the scan (verified sign-in name). Null/absent on scans from
+  // before identity existed, or when the API has no identity.
+  requested_by?: string | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
   llm_tokens_used: number;
   llm_token_budget: number;
   phases: ScanPhase[];
+}
+
+// --- Identity, estimates and authorisation (active tools) ---
+
+export interface AuthorisationStatement {
+  version: string;
+  // Both contain {client} and {target} placeholders.
+  template: string;
+  all_ports_template: string;
+}
+
+export interface Whoami {
+  username: string | null;
+  source: string | null;
+  // Active tools this deployment can run. The UI shows only these.
+  available_tools: string[];
+  statement?: AuthorisationStatement | null;
+}
+
+// The estimate's exact shape is owned by sentinel_core.scan_options.estimate();
+// the UI renders whatever numbers it returns (see lib/activeTools.ts).
+export type ScanEstimate = Record<string, unknown>;
+
+export interface AuthorisationIn {
+  accepted: boolean;
+  client_name: string;
+  statement_version: string;
+  all_ports_confirmed: boolean;
+}
+
+export interface ScanAuthorisation {
+  id: string;
+  scan_id: string;
+  target_id: string;
+  username: string;
+  accepted_at: string;
+  statement_version: string;
+  statement_text: string;
+  client_name: string;
+  target_name: string;
+  tools: string[];
+  all_ports_confirmed: boolean;
+  target_environment: TargetEnvironment | string;
+  options_snapshot: Record<string, unknown>;
+  client_ip: string | null;
+  user_agent: string | null;
+  carried_over_from_scan_id: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ScanCreateBody {
+  speed?: ScanSpeed;
+  depth?: ScanDepth;
+  recon_profile?: ReconProfile;
+  dir_bruteforce?: boolean;
+  port_scan?: boolean;
+  all_ports?: boolean;
+  wordlist?: Wordlist;
+  target_environment?: TargetEnvironment;
+  authorisation?: AuthorisationIn;
+}
+
+export interface ScanRetryBody {
+  authorisation?: AuthorisationIn;
+  drop_active_tools?: boolean;
 }
 
 // --- Findings ---
