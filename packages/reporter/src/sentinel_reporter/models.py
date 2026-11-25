@@ -72,6 +72,69 @@ class ReportFinding:
 
 
 @dataclass(frozen=True, slots=True)
+class ReportPath:
+    """A path found by directory brute force. Names, status and size only:
+    no file content is ever part of a report."""
+
+    origin: str
+    path: str
+    url: str
+    method: str
+    status_code: int
+    category: str
+    verdict: str  # confirmed | not_confirmed | found
+    wordlist: str
+    content_length: int | None = None
+    content_type: str | None = None
+    redirect_location: str | None = None
+    rule_id: str | None = None
+    note: str | None = None
+    crawl_seed: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "origin": self.origin,
+            "path": self.path,
+            "url": self.url,
+            "method": self.method,
+            "status_code": self.status_code,
+            "content_length": self.content_length,
+            "content_type": self.content_type,
+            "redirect_location": self.redirect_location,
+            "category": self.category,
+            "wordlist": self.wordlist,
+            "verdict": self.verdict,
+            "rule_id": self.rule_id,
+            "note": self.note,
+            "crawl_seed": self.crawl_seed,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ReportAuthorisation:
+    """Who confirmed they were authorised to run the scan's active tools."""
+
+    username: str
+    accepted_at: datetime
+    client_name: str
+    tools: list[str]
+    statement_version: str
+    statement_text: str
+    target_environment: str
+
+    def to_dict(self) -> dict:
+        return {
+            "username": self.username,
+            "accepted_at": self.accepted_at.isoformat(),
+            "client_name": self.client_name,
+            "tools": list(self.tools),
+            "statement_version": self.statement_version,
+            "statement_text": self.statement_text,
+            "target_environment": self.target_environment,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ScanReport:
     scan_id: str
     target_root_domain: str
@@ -88,9 +151,20 @@ class ScanReport:
     # back to the generic wording.
     checks_run: list[str] = field(default_factory=list)
     checks_skipped: list[str] = field(default_factory=list)
+    # Directory brute force results, and the authorisation behind the scan's
+    # active tools. Both are empty/None for a passive scan.
+    paths: list[ReportPath] = field(default_factory=list)
+    authorisation: ReportAuthorisation | None = None
 
     @property
     def summary(self) -> dict:
+        summary = self._base_summary()
+        if self.paths:
+            summary["paths_found"] = len(self.paths)
+            summary["paths_confirmed"] = sum(1 for p in self.paths if p.verdict == "confirmed")
+        return summary
+
+    def _base_summary(self) -> dict:
         return {
             "assets_found": len(self.assets),
             "endpoints_found": len(self.endpoints),
@@ -112,6 +186,8 @@ class ScanReport:
             "assets": [a.to_dict() for a in self.assets],
             "endpoints": [e.to_dict() for e in self.endpoints],
             "findings": [f.to_dict() for f in self.findings],
+            "paths": [p.to_dict() for p in self.paths],
+            "authorisation": self.authorisation.to_dict() if self.authorisation else None,
             "is_degraded": self.is_degraded,
             "degraded_reasons": list(self.degraded_reasons),
             "checks_run": list(self.checks_run),

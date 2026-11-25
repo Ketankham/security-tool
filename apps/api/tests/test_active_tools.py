@@ -1,8 +1,9 @@
 """Active tools at the API: validation, the authorisation record, retry, cancel.
 
-No active tool is implemented in this build (IMPLEMENTED_ACTIVE_TOOLS is
-empty), so the tests that exercise the rest of the rules switch the three on
-for the duration of the test; the first test shows what a real caller sees today.
+Only directory brute force is implemented in this build
+(IMPLEMENTED_ACTIVE_TOOLS); port scanning and all-ports are still refused as
+"not available yet". The tests that exercise the port rules switch all three on
+for the duration of the test; the first tests show what a real caller sees today.
 """
 
 from __future__ import annotations
@@ -99,13 +100,12 @@ async def count(db_engine, model) -> int:
         return (await session.execute(select(func.count()).select_from(model))).scalar_one()
 
 
-# --- Today's behaviour: nothing active is available ---------------------------
+# --- Today's behaviour: only directory brute force is available ----------------
 
 
 @pytest.mark.parametrize(
     ("flag", "label"),
     [
-        ("dir_bruteforce", "Directory brute force"),
         ("port_scan", "Port scanning"),
         ("all_ports", "All 65,535 ports"),
     ],
@@ -126,9 +126,75 @@ async def test_any_real_tool_request_is_refused_as_not_available_yet(
 
 async def test_not_available_is_reported_before_the_missing_identity(client, no_dispatch):
     headers, target = await make_target(client, "na-before-identity")
-    resp = await start(client, target, headers, dir_bruteforce=True)  # no identity, no confirmation
+    resp = await start(client, target, headers, port_scan=True)  # no identity, no confirmation
     assert resp.status_code == 422
-    assert resp.json()["detail"] == "Directory brute force is not available yet."
+    assert resp.json()["detail"] == "Port scanning is not available yet."
+
+
+async def test_directory_brute_force_is_accepted_with_an_identity_and_the_confirmation(
+    client, db_engine, no_dispatch
+):
+    headers, target = await make_target(client, "dir-accepted")
+    resp = await start(
+        client, target, {**headers, **who()}, dir_bruteforce=True, authorisation=confirm()
+    )
+    assert resp.status_code == 201, resp.text
+    scan = resp.json()
+    assert scan["requested_by"] == "alice"
+    assert scan["options"]["dir_bruteforce"] is True
+    assert scan["options"]["wordlist"] == "sentinel-core"
+    auth = (await client.get(f"/scans/{scan['id']}/authorisation", headers=headers)).json()
+    assert auth["tools"] == ["dir_bruteforce"]
+    assert auth["username"] == "alice"
+    assert await count(db_engine, ScanAuthorisation) == 1
+
+
+async def test_directory_brute_force_still_needs_the_identity_and_the_confirmation(
+    client, db_engine, no_dispatch
+):
+    headers, target = await make_target(client, "dir-needs-both")
+    no_identity = await start(client, target, headers, dir_bruteforce=True, authorisation=confirm())
+    assert no_identity.status_code == 403
+    no_confirmation = await start(client, target, {**headers, **who()}, dir_bruteforce=True)
+    assert no_confirmation.status_code == 422
+    assert await count(db_engine, Scan) == 0
+
+
+async def test_the_seclists_wordlist_is_accepted_for_directory_brute_force_on_full(
+    client, no_dispatch
+):
+    headers, target = await make_target(client, "dir-seclists-ok")
+    resp = await start(
+        client,
+        target,
+        {**headers, **who()},
+        dir_bruteforce=True,
+        recon_profile="full",
+        wordlist="seclists-common",
+        authorisation=confirm(),
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["options"]["wordlist"] == "seclists-common"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"wordlist": "seclists-common", "dir_bruteforce": True, "recon_profile": "light"},
+        {"wordlist": "seclists-common", "recon_profile": "full"},
+        {"wordlist": "seclists-common"},
+    ],
+)
+async def test_the_seclists_rules_hold_with_only_the_real_implemented_tools(
+    client, no_dispatch, body
+):
+    headers, target = await make_target(client, f"dir-seclists-{uuid.uuid4().hex[:6]}")
+    resp = await start(client, target, {**headers, **who()}, authorisation=confirm(), **body)
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == (
+        "The SecLists wordlist is only available for directory brute forcing on the Full recon "
+        "profile."
+    )
 
 
 async def test_a_passive_scan_stores_every_option_and_needs_no_identity(client, no_dispatch):

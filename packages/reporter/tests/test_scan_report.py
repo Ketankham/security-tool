@@ -1,6 +1,13 @@
 from datetime import UTC, datetime
 
-from sentinel_reporter import ReportAsset, ReportEndpoint, ReportFinding, ScanReport
+from sentinel_reporter import (
+    ReportAsset,
+    ReportAuthorisation,
+    ReportEndpoint,
+    ReportFinding,
+    ReportPath,
+    ScanReport,
+)
 
 
 def _make_report(**overrides) -> ScanReport:
@@ -82,3 +89,71 @@ def test_scope_note_names_the_checks_that_ran_and_the_ones_that_did_not():
     assert "then: security headers, cookies, CORS, exposed files and TLS." in body["scope_note"]
     assert "Not run: injection testing, session management." in body["scope_note"]
     assert "did not run, not that the target is clean" in body["scope_note"]
+
+
+# --- Directory brute force and the authorisation behind it ---------------------
+
+
+def _path(**overrides):
+    values = dict(
+        origin="https://acme.test",
+        path="/.env",
+        url="https://acme.test/.env",
+        method="GET",
+        status_code=200,
+        category="config",
+        verdict="confirmed",
+        wordlist="sentinel-core",
+        rule_id="exposed.env_file",
+    )
+    values.update(overrides)
+    return ReportPath(**values)
+
+
+def test_an_old_style_report_has_no_paths_and_an_unchanged_summary():
+    body = _make_report().to_dict()
+    assert body["paths"] == []
+    assert body["authorisation"] is None
+    assert set(body["summary"]) == {
+        "assets_found",
+        "endpoints_found",
+        "personas_crawled",
+        "findings_confirmed",
+        "findings_probable",
+    }
+
+
+def test_paths_are_listed_and_counted_in_the_summary():
+    report = _make_report(
+        paths=[_path(), _path(path="/admin/", verdict="found", category="admin", rule_id=None)]
+    )
+    body = report.to_dict()
+    assert body["summary"]["paths_found"] == 2
+    assert body["summary"]["paths_confirmed"] == 1
+    assert [p["path"] for p in body["paths"]] == ["/.env", "/admin/"]
+    first = body["paths"][0]
+    assert first["verdict"] == "confirmed" and first["rule_id"] == "exposed.env_file"
+    # names, status, size and type only: there is nowhere for file content to go
+    assert not {"body", "content", "text"} & set(first)
+
+
+def test_the_authorisation_is_part_of_the_report():
+    auth = ReportAuthorisation(
+        username="alice",
+        accepted_at=datetime(2026, 11, 25, 9, 30, tzinfo=UTC),
+        client_name="Acme Ltd",
+        tools=["dir_bruteforce"],
+        statement_version="1",
+        statement_text="I confirm Acme Ltd has authorised ...",
+        target_environment="production",
+    )
+    body = _make_report(authorisation=auth).to_dict()
+    assert body["authorisation"] == {
+        "username": "alice",
+        "accepted_at": "2026-11-25T09:30:00+00:00",
+        "client_name": "Acme Ltd",
+        "tools": ["dir_bruteforce"],
+        "statement_version": "1",
+        "statement_text": "I confirm Acme Ltd has authorised ...",
+        "target_environment": "production",
+    }

@@ -41,6 +41,10 @@ def test_implemented_tools_are_a_subset_of_the_known_ones():
     assert set(scan_options.ACTIVE_TOOL_LABELS) == set(scan_options.ACTIVE_TOOL_KEYS)
 
 
+def test_directory_brute_force_is_the_implemented_tool_in_this_build():
+    assert scan_options.IMPLEMENTED_ACTIVE_TOOLS == ("dir_bruteforce",)
+
+
 def test_resolvers_fall_back_to_the_safe_defaults():
     assert scan_options.resolve_wordlist(None) == "sentinel-core"
     assert scan_options.resolve_wordlist({"wordlist": "bogus"}) == "sentinel-core"
@@ -86,6 +90,22 @@ def test_estimate_is_capped_by_the_budget():
     d = est["dir_bruteforce"]
     assert d["seconds_per_host"] == 750  # 1500 / 2
     assert d["seconds_total"] == scan_options.DIR_BUDGET_S["light"]  # 5 x 750 > 1800
+
+
+def test_estimate_one_host_never_runs_longer_than_its_per_host_cap():
+    est = scan_options.estimate(
+        {
+            "dir_bruteforce": True,
+            "wordlist": "seclists-common",
+            "speed": "gentle",
+            "recon_profile": "full",
+        }
+    )
+    d = est["dir_bruteforce"]
+    assert scan_options.DIR_HOST_CAP_S["full"] < 4751 / 2
+    assert d["seconds_per_host"] == scan_options.DIR_HOST_CAP_S["full"] == 1800
+    assert d["seconds_total"] == min(10 * 1800, scan_options.DIR_BUDGET_S["full"])
+    assert scan_options.DIR_HOST_CAP_S == {"light": 900, "full": 1800}
 
 
 def test_estimate_seclists_wordlist_is_bigger():

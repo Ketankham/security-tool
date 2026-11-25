@@ -186,24 +186,44 @@ class _NoCancel:
         return None
 
 
-async def test_runner_says_not_implemented_for_authorised_tools_in_this_version(db_engine):
+async def test_runner_says_not_implemented_for_authorised_tools_this_version_lacks(db_engine):
+    """Directory brute force is implemented; port scanning is not (yet): it is
+    reported as not run, never silently dropped, and the runner still gets the
+    whole authorised set back."""
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     log = RecordingLog()
     async with factory() as session:
         scan, target = await _scan(session, {"dir_bruteforce": True, "port_scan": True})
         session.add(_record(scan, target))
         await session.flush()
-        await _run_active_tools(session, scan, log, _NoCancel())
+        authorised = await _run_active_tools(session, scan, log, _NoCancel())
+        assert authorised == {"dir_bruteforce", "port_scan"}
         messages = log.messages
-        assert (
-            "Directory brute force was requested but is not implemented in this version; skipped."
-            in messages
-        )
         assert (
             "Port scanning was requested but is not implemented in this version; skipped."
             in messages
         )
+        assert not any(
+            "Directory brute force was requested but is not implemented" in m for m in messages
+        )
         assert scan.is_degraded is True
+        assert scan.degraded_reasons == [
+            "Port scanning was requested but is not implemented in this version; skipped."
+        ]
+
+
+async def test_runner_says_not_implemented_for_all_ports_too(db_engine):
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    log = RecordingLog()
+    async with factory() as session:
+        scan, target = await _scan(session, {"port_scan": True, "all_ports": True})
+        session.add(_record(scan, target))
+        await session.flush()
+        await _run_active_tools(session, scan, log, _NoCancel())
+        assert (
+            "All 65,535 ports was requested but is not implemented in this version; skipped."
+            in log.messages
+        )
         assert len(scan.degraded_reasons) == 2
 
 
