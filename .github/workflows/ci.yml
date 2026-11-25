@@ -197,7 +197,7 @@ jobs:
           mkdir -p deploy-bundle
           docker save sentinel-api:latest sentinel-worker:latest sentinel-web:latest \
             | gzip > deploy-bundle/sentinel-images.tar.gz
-          cp infra/deploy/docker-compose.prod.yml infra/deploy/remote-deploy.sh deploy-bundle/
+          cp infra/deploy/docker-compose.prod.yml infra/deploy/remote-deploy.sh infra/deploy/manage-users.sh deploy-bundle/
           cp -r infra/deploy/edge deploy-bundle/edge
           ls -lh deploy-bundle
 

@@ -5,8 +5,8 @@ domain, under a path:
 
 | URL | What |
 |---|---|
-| `https://accsysn.duckdns.org/security` | Sentinel dashboard (Next.js) |
-| `https://accsysn.duckdns.org/security/api/docs` | Sentinel API (FastAPI / Swagger) |
+| `https://accsysn.duckdns.org/security` | Sentinel dashboard (Next.js), **login required** |
+| `https://accsysn.duckdns.org/security/api/docs` | Sentinel API (FastAPI / Swagger), **login required** |
 | `http://accsysn.duckdns.org:8000/` | Accsys accounting, **unchanged** |
 | `http://accsysn.duckdns.org/` (port 80) | another app on the box (`mep-web`), **unchanged**, not ours |
 
@@ -18,6 +18,8 @@ on port 80, which belongs to `mep-web`, so it shows that app's 404 instead.
 ```
 Internet
   ├─ :443 ──► Caddy  (/opt/edge, host network, Let's Encrypt via TLS-ALPN on 443)
+  │             ├─ /security/api/healthz ─► 127.0.0.1:8100  (the only path without a login)
+  │             ├─ [login: basic auth, /opt/sentinel/dashboard-users]
   │             ├─ /security/api/*  ─► 127.0.0.1:8100  sentinel api   (prefix stripped)
   │             ├─ /security[/*]    ─► 127.0.0.1:3100  sentinel web   (prefix kept, Next basePath)
   │             └─ /*               ─► 302 redirect to http://<domain>/... (port 80's owner)
@@ -42,17 +44,25 @@ deploys.
 
 1. Builds `sentinel-api`, `sentinel-worker` (with Chromium) and `sentinel-web`
    (built with `NEXT_PUBLIC_BASE_PATH=/security`, `NEXT_PUBLIC_API_BASE=/security/api`).
-2. `docker save`s them into one tarball and copies it, plus `infra/deploy/*`,
-   to `/opt/sentinel`.
+2. `docker save`s them into one tarball and copies it, plus `docker-compose.prod.yml`,
+   `remote-deploy.sh`, `manage-users.sh` and `edge/`, to `/opt/sentinel`.
 3. Runs `remote-deploy.sh` on the server, which:
+   - **first checks that `/opt/sentinel/dashboard-users` holds at least one valid
+     login** (see [Access](#access-who-can-open-sentinel)); if not, it stops there
+     with the exact commands to run, before loading or restarting anything,
    - validates the secrets and refuses to start with a changed `KMS_MASTER_KEY` (see below),
-   - writes `/opt/sentinel/.env` from the secrets,
+   - writes `/opt/sentinel/.env` from the secrets (including `REQUIRE_IDENTITY=true`
+     and the proxy secret) and `/opt/edge/.env` (mode 600),
    - loads the images, starts postgres + redis, runs `alembic upgrade head`,
    - starts api / worker / worker-logins / web and waits for their health checks,
-   - validates the new Caddy config with `caddy validate`, and only then
-     installs/reloads it in `/opt/edge` (restoring the previous config if the
-     reload is rejected),
-   - smoke-checks `/healthz` locally and through `https://<domain>/security/api/healthz`.
+   - renders the logins into a Caddy snippet, validates the new Caddy config
+     with `caddy validate`, and only then installs/reloads it in `/opt/edge`
+     (restoring the previous config if the reload is rejected),
+   - smoke-checks, each one failing the deploy if it is wrong: an anonymous
+     `https://<domain>/security` must answer **401**; the API on `127.0.0.1:8100`
+     must answer 401 to a spoofed `X-Sentinel-User` header, and 200 (user
+     `deploy-smoke`) when the proxy secret is sent; and
+     `https://<domain>/security/api/healthz` is checked (warning only).
 
 ## One-time setup
 
@@ -70,8 +80,10 @@ accounting repo uses:
 
 The app's own secrets are **generated on the server on the first deploy** and
 kept in `/opt/sentinel/.secrets` (mode 600): `KMS_MASTER_KEY`,
-`POSTGRES_PASSWORD`, `API_SECRET_KEY`. **Back that file up once** after the
-first deploy:
+`POSTGRES_PASSWORD`, `API_SECRET_KEY`, `SENTINEL_PROXY_SECRET` (the shared
+secret Caddy sends the API, see [Access](#access-who-can-open-sentinel)).
+**Back that file up** after the first deploy (and again after the deploy that
+introduced `SENTINEL_PROXY_SECRET`):
 
 ```bash
 scp root@accsysn.duckdns.org:/opt/sentinel/.secrets ./sentinel-secrets.backup
@@ -82,6 +94,22 @@ Optional secrets: `ANTHROPIC_API_KEY` (LLM-assisted phases), and
 supply your own values instead of the generated ones.
 
 Optional repository **variable** `SITE_DOMAIN` (defaults to `accsysn.duckdns.org`).
+
+### Dashboard logins (before the first deploy with logins)
+
+Per-person logins have to exist **before** the deploy, or it stops at step 0 and
+changes nothing (the site keeps running the previous release):
+
+```bash
+scp infra/deploy/manage-users.sh root@accsysn.duckdns.org:/opt/sentinel/
+ssh root@accsysn.duckdns.org
+bash /opt/sentinel/manage-users.sh add ketan        # prompts for a password (12+ characters)
+bash /opt/sentinel/manage-users.sh add <tester>     # one login per person
+bash /opt/sentinel/manage-users.sh list
+```
+
+If you merged first and the deploy stopped, run the same commands, then
+**Actions → CI → Run workflow** (main).
 
 ### Server
 
@@ -137,18 +165,67 @@ Hetzner Cloud firewall (in the Hetzner console) is in use, allow 443 there too.
   `httpx` is left out on purpose: the venv's Python `httpx` script has the same
   name, and recon's built-in Python prober handles HTTP probing.
 
-## Public exposure: read before relying on it
+## Access: who can open Sentinel
 
-There is **no password** on `/security`: this is an internal tool for one
-small team, and anyone with the URL can open it and browse every
-organization. Ownership verification is off too. Before anyone outside the
-team gets the URL:
+Everything under `https://<domain>/security` (dashboard **and** API) needs a
+personal login. The only exception is `GET /security/api/healthz` (liveness, no
+data). There are no shared passwords: one login per person, so scans and the
+audit record name who did what.
 
-- add a password (`basic_auth` in the Caddyfile) or real user accounts (Clerk),
-- add private and link-local IP blocking to the scope guard, so the worker can't
-  be pointed at the server's own internal services,
-- keep in mind that Hetzner acts quickly on scanning abuse reports: only scan
-  targets that passed ownership verification.
+How it works:
+
+- **Caddy** checks the login (HTTP basic auth). The logins are in
+  `/opt/sentinel/dashboard-users` (mode 600, `username<space>bcrypt-hash`; only
+  hashes, never passwords). The deploy renders them into
+  `/opt/edge/conf/sentinel-access.caddy`, which the Caddyfile imports by exact
+  path: if the file is missing Caddy refuses the config instead of serving the
+  dashboard open, and the deploy refuses a users file with no valid login.
+- Caddy then tells the API who signed in: it sets `X-Sentinel-User` to the
+  username (replacing anything the browser sent) plus `X-Sentinel-Proxy-Secret`,
+  and drops the browser's `Authorization` header. The API (`REQUIRE_IDENTITY=true`)
+  believes the username only when the secret matches, and refuses everything
+  that has no identity, so a request that skips Caddy (for example straight to
+  `127.0.0.1:8100` from another container) gets 401.
+- `SENTINEL_PROXY_SECRET` is generated on the server on the first deploy, kept
+  in `/opt/sentinel/.secrets`, and written to `/opt/sentinel/.env` (API) and
+  `/opt/edge/.env` (Caddy, mode 600).
+
+### Managing logins
+
+On the server, as root:
+
+```bash
+bash /opt/sentinel/manage-users.sh add <user>      # new login, or change that user's password (prompts twice, 12+ characters)
+bash /opt/sentinel/manage-users.sh remove <user>   # refuses to remove the last login
+bash /opt/sentinel/manage-users.sh list            # usernames only
+bash /opt/sentinel/manage-users.sh apply           # validate + install into /opt/edge/conf + reload Caddy, without a deploy
+```
+
+`add` and `remove` only edit the users file; they take effect on the next
+deploy or when you run `apply`. Usernames are lower-case letters, digits, `.`,
+`_`, `-` (up to 32 characters). Passwords are hashed by Caddy itself (bcrypt),
+read from the terminal, never put on a command line.
+
+- **Forgotten password:** `manage-users.sh add <user>` (same name, new password),
+  then `manage-users.sh apply`.
+- **Someone leaves:** `manage-users.sh remove <user>`, then `apply`. Their access
+  stops at once (basic auth keeps no session).
+- **No logout.** Browsers remember basic-auth credentials until the browser is
+  closed; there is no sign-out button. Use a private window on a shared computer.
+- **No lockout.** Caddy does not rate-limit failed logins. The protection is
+  bcrypt (cost 14) and 12+ character passwords per person; add fail2ban or an
+  IP allow-list if the URL comes under attack.
+
+### Other things to know before the URL goes to anyone else
+
+- Ownership verification is off (`REQUIRE_OWNERSHIP_VERIFICATION=false`): anyone
+  with a login can scan any target they add. Only give logins to people you trust
+  with that.
+- Every login can open every organization (there are no per-organization roles yet).
+- Private and link-local addresses are blocked by the scope guard so the worker
+  can't be pointed at the server's own internal services.
+- Hetzner acts quickly on scanning abuse reports: only scan targets you are
+  authorised to test.
 
 ## Useful commands on the server
 

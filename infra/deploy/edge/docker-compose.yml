@@ -13,6 +13,10 @@ services:
     network_mode: host
     environment:
       SITE_DOMAIN: ${SITE_DOMAIN:-accsysn.duckdns.org}
+      # Shared with the Sentinel API (/opt/sentinel/.env). Caddy sends it with
+      # every proxied request so the API can tell Caddy's identity header from
+      # a forged one. Written to /opt/edge/.env (mode 600) by remote-deploy.sh.
+      SENTINEL_PROXY_SECRET: ${SENTINEL_PROXY_SECRET:?SENTINEL_PROXY_SECRET missing from /opt/edge/.env}
     volumes:
       # Mount the directory, not the single file: scp replaces the file
       # (new inode), and a single-file bind mount would keep the old one.
