@@ -54,3 +54,21 @@ def test_flags_stale_manifest_entry():
     only_subfinder = "RUN go install github.com/x/subfinder/v2/cmd/subfinder@v2.17.0"
     problems = tmc.check(only_subfinder, _manifest())
     assert any("in the manifest but not installed" in p for p in problems)
+
+
+def test_root_module_install_with_a_major_version_suffix_is_matched():
+    """ffuf is installed from its root module path (…/ffuf/v2, no /cmd/…)."""
+    dockerfile = "RUN go install github.com/ffuf/ffuf/v2@v2.3.0 \\\n    && /out/ffuf -V"
+    assert tmc.installed_modules(dockerfile) == {"github.com/ffuf/ffuf/v2": "v2.3.0"}
+    manifest = {
+        "permitted_licences": ["MIT"],
+        "tools": [
+            {"name": "ffuf", "module": "github.com/ffuf/ffuf/v2", "version": "v2.3.0",
+             "licence": "MIT", "source": "s", "used_for": "u"},
+        ],
+    }  # fmt: skip
+    assert tmc.check(dockerfile, manifest) == []
+    manifest["tools"][0]["version"] = "v2.2.0"
+    assert any(
+        "installs v2.3.0, manifest says v2.2.0" in p for p in tmc.check(dockerfile, manifest)
+    )

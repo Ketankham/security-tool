@@ -40,6 +40,10 @@ from .session import AnonymousSession, SessionState
 
 log = structlog.get_logger(__name__)
 
+# The User-Agent every scanner request carries (also passed to external tools
+# such as ffuf, so the target's logs show one consistent scanner identity).
+USER_AGENT = "SentinelScanner/0.1 (+https://example.invalid/about-our-scanner)"
+
 _IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _RATE_LIMITED_STATUS_CODES = frozenset({429, 503})
 
@@ -74,7 +78,7 @@ class HttpEngine:
         address_guard: AddressGuard | None = None,
         timeout_s: float = 20.0,
         max_retries: int = 2,
-        user_agent: str = "SentinelScanner/0.1 (+https://example.invalid/about-our-scanner)",
+        user_agent: str = USER_AGENT,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._scope_guard = scope_guard

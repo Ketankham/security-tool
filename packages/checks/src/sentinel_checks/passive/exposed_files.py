@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from sentinel_core.http_engine import EngineResponse
@@ -199,14 +199,10 @@ def _archive(path: str) -> Probe:
     )
 
 
-PROBES: list[Probe] = [
-    _env("/.env"),
-    _env("/.env.local"),
-    _env("/.env.production"),
-    _env("/.env.backup"),
-    Probe(
+def _git_head(path: str) -> Probe:
+    return Probe(
         "exposed.git_repository",
-        "/.git/HEAD",
+        path,
         "Git repository is publicly downloadable",
         "high",
         [527],
@@ -217,10 +213,13 @@ PROBES: list[Probe] = [
             "Deny access to /.git at the web server.",
             "Assume the source code and any committed secrets are public; rotate secrets.",
         ],
-    ),
-    Probe(
+    )
+
+
+def _git_config(path: str) -> Probe:
+    return Probe(
         "exposed.git_config",
-        "/.git/config",
+        path,
         "Git configuration is publicly downloadable",
         "high",
         [527],
@@ -231,20 +230,26 @@ PROBES: list[Probe] = [
             "Rotate any credentials in remote URLs.",
         ],
         withhold=True,
-    ),
-    Probe(
+    )
+
+
+def _ds_store(path: str) -> Probe:
+    return Probe(
         "exposed.ds_store",
-        "/.DS_Store",
+        path,
         "macOS .DS_Store file is publicly downloadable",
         "low",
         [538],
         validate_ds_store,
         _REMOVE,
         ["Delete .DS_Store files from the web root.", "Deny dotfiles at the web server."],
-    ),
-    Probe(
+    )
+
+
+def _htpasswd(path: str) -> Probe:
+    return Probe(
         "exposed.htpasswd",
-        "/.htpasswd",
+        path,
         ".htpasswd password file is publicly downloadable",
         "high",
         [538],
@@ -252,10 +257,13 @@ PROBES: list[Probe] = [
         _REMOVE + " " + _ROTATE,
         ["Move .htpasswd outside the web root.", "Reset the passwords it protected."],
         withhold=True,
-    ),
-    Probe(
+    )
+
+
+def _config_backup(path: str) -> Probe:
+    return Probe(
         "exposed.config_backup",
-        "/wp-config.php.bak",
+        path,
         "Application config backup is publicly downloadable",
         "critical",
         [530, 200],
@@ -266,21 +274,20 @@ PROBES: list[Probe] = [
             "Rotate the database password.",
         ],
         withhold=True,
-    ),
-    Probe(
-        "exposed.config_backup",
-        "/wp-config.php.old",
-        "Application config backup is publicly downloadable",
-        "critical",
-        [530, 200],
-        validate_wp_config,
-        _REMOVE + " " + _ROTATE,
-        [
-            "Delete editor/backup copies of config files from the web root.",
-            "Rotate the database password.",
-        ],
-        withhold=True,
-    ),
+    )
+
+
+PROBES: list[Probe] = [
+    _env("/.env"),
+    _env("/.env.local"),
+    _env("/.env.production"),
+    _env("/.env.backup"),
+    _git_head("/.git/HEAD"),
+    _git_config("/.git/config"),
+    _ds_store("/.DS_Store"),
+    _htpasswd("/.htpasswd"),
+    _config_backup("/wp-config.php.bak"),
+    _config_backup("/wp-config.php.old"),
     Probe(
         "exposed.phpinfo",
         "/phpinfo.php",
@@ -363,6 +370,148 @@ PROBES: list[Probe] = [
 ]
 
 
+_ARCHIVE_SUFFIXES = (
+    ".zip",
+    ".tar",
+    ".tar.gz",
+    ".tgz",
+    ".gz",
+    ".bz2",
+    ".7z",
+    ".rar",
+    ".sql",
+    ".sql.gz",
+    ".dump",
+    ".db",
+    ".sqlite",
+)
+_PROBES_BY_PATH = {probe.path: probe for probe in PROBES}
+
+
+def probe_for_path(path: str) -> Probe | None:
+    """The probe that knows how to recognise (and safely fetch) ``path``, or
+    None when the path is just a path with no file signature.
+
+    Used by directory brute forcing to turn a *found* path into a validated
+    finding: a status code alone proves nothing, so only paths that map to a
+    probe (a content signature, plus whether the body must be withheld) can
+    become findings. ``path`` may be written with or without a leading "/"; the
+    returned probe's ``path`` always has one. What each kind validates:
+
+    - a path in ``PROBES``: that probe, unchanged;
+    - an archive/dump suffix (.zip .tar .tar.gz .tgz .gz .bz2 .7z .rar .sql
+      .sql.gz .dump .db .sqlite, any case): the backup probe, which is HEAD-only
+      and checks the content type and a size of at least 1 KiB, so the file is
+      never downloaded. This is tested first, so ``.env.sql`` or
+      ``wp-config.php.gz`` are never fetched with GET;
+    - basename ``.env*``: the .env probe (GET, body withheld): at least two
+      KEY=value lines and not an HTML page;
+    - ``.../.git/HEAD`` / ``.../.git/config``: a Git HEAD pointer (``ref: refs/``
+      or a 40-hex id) / a Git config (``[core]`` + ``repositoryformatversion``,
+      body withheld);
+    - basename ``.DS_Store`` / ``.htpasswd``: the Bud1 magic bytes / a password
+      hash line (body withheld);
+    - basename ``wp-config.php.*``: the config-backup probe (``DB_PASSWORD`` and
+      ``DB_NAME`` in the body, body withheld).
+    """
+    if not path or any(c in path for c in "?#\\ \t\r\n") or ".." in path.split("/"):
+        return None
+    full = path if path.startswith("/") else "/" + path
+    exact = _PROBES_BY_PATH.get(full)
+    if exact is not None:
+        return exact
+    if full.endswith("/"):
+        return None
+    base = full.rsplit("/", 1)[1]
+    lower = full.lower()
+    if lower.endswith(_ARCHIVE_SUFFIXES):
+        return _archive(full)
+    if base.startswith(".env"):
+        return _env(full)
+    if full.endswith("/.git/HEAD"):
+        return _git_head(full)
+    if full.endswith("/.git/config"):
+        return _git_config(full)
+    if base == ".DS_Store":
+        return _ds_store(full)
+    if base == ".htpasswd":
+        return _htpasswd(full)
+    if base.startswith("wp-config.php.") and len(base) > len("wp-config.php."):
+        return _config_backup(full)
+    return None
+
+
+def matches_baseline(
+    probe: Probe, response: EngineResponse, baseline: EngineResponse | None
+) -> bool:
+    """True when the site answered this probe the way it answers a made-up path
+    (a catch-all): identical body for GET, identical content type for HEAD."""
+    if baseline is None or baseline.status_code != 200 or response.status_code != 200:
+        return False
+    if probe.method == "GET":
+        return response.body == baseline.body
+    return hget(response.headers, "content-type") == hget(baseline.headers, "content-type")
+
+
+FetchFn = Callable[..., Awaitable[EngineResponse | None]]
+
+
+def build_candidate(
+    probe: Probe,
+    origin: str,
+    url: str,
+    response: EngineResponse,
+    matched: str,
+    fetch: FetchFn,
+) -> PassiveCandidate:
+    """The finding candidate for a probe whose validator accepted ``response``.
+
+    ``fetch(method, url, withhold_body=...)`` makes the re-request used by the
+    candidate's ``reproduce`` thunk; it must go through the scan's HttpEngine
+    (scope guard, rate limit, address guard). ``matched`` is the validator's
+    description (never contains secret values).
+    """
+
+    async def reproduce() -> bool:
+        again = await fetch(probe.method, url, withhold_body=probe.withhold)
+        return (
+            again is not None and again.status_code == 200 and (probe.validate(again) is not None)
+        )
+
+    return PassiveCandidate(
+        rule_id=probe.rule_id,
+        title=f"{probe.title} ({origin.split('://', 1)[1]}{probe.path})",
+        severity=probe.severity,
+        cwe=probe.cwe,
+        owasp=probe.owasp,
+        origin=origin,
+        subject=probe.path,
+        narrative=(
+            f"{url} can be fetched by anyone without logging in, and it is {matched}."
+            + (
+                " The response body was deliberately not stored here, to avoid copying secrets."
+                if probe.withhold
+                else ""
+            )
+        ),
+        remediation_summary=probe.fix,
+        remediation_steps=probe.steps,
+        reproduction_curl=curl_for(url, method=probe.method),
+        reproduction_expect="It answers 200 with the content described above instead of 404.",
+        evidence=[
+            EvidenceRef(
+                transcript_id=response.transcript_id,
+                method=probe.method,
+                url=url,
+                status_code=response.status_code,
+                role="exposed-file-response",
+                note=f"{probe.method} {url} answered {response.status_code}: {matched}",
+            )
+        ],
+        reproduce=reproduce,
+    )
+
+
 async def check_exposed_files(ctx: PassiveContext) -> list[PassiveCandidate]:
     candidates: list[PassiveCandidate] = []
     probed = 0
@@ -390,68 +539,13 @@ async def check_exposed_files(ctx: PassiveContext) -> list[PassiveCandidate]:
             probed += 1
             if response.status_code != 200:
                 continue
-            if baseline is not None and baseline.status_code == 200:
-                same = (
-                    response.body == baseline.body
-                    if probe.method == "GET"
-                    else hget(response.headers, "content-type")
-                    == hget(baseline.headers, "content-type")
-                )
-                if same:
-                    continue  # the site answers everything the same way
+            if matches_baseline(probe, response, baseline):
+                continue  # the site answers everything the same way
             matched = probe.validate(response)
             if matched is None:
                 continue
             ctx.log("warn", f"Exposed file: {url} is {matched}")
-
-            def make_reproduce(probe: Probe = probe, url: str = url):
-                async def reproduce() -> bool:
-                    again = await ctx.fetch(probe.method, url, withhold_body=probe.withhold)
-                    return (
-                        again is not None
-                        and again.status_code == 200
-                        and (probe.validate(again) is not None)
-                    )
-
-                return reproduce
-
-            candidates.append(
-                PassiveCandidate(
-                    rule_id=probe.rule_id,
-                    title=f"{probe.title} ({origin.split('://', 1)[1]}{probe.path})",
-                    severity=probe.severity,
-                    cwe=probe.cwe,
-                    owasp=probe.owasp,
-                    origin=origin,
-                    subject=probe.path,
-                    narrative=(
-                        f"{url} can be fetched by anyone without logging in, and it is {matched}."
-                        + (
-                            " The response body was deliberately not stored here, to avoid "
-                            "copying secrets."
-                            if probe.withhold
-                            else ""
-                        )
-                    ),
-                    remediation_summary=probe.fix,
-                    remediation_steps=probe.steps,
-                    reproduction_curl=curl_for(url, method=probe.method),
-                    reproduction_expect=(
-                        "It answers 200 with the content described above instead of 404."
-                    ),
-                    evidence=[
-                        EvidenceRef(
-                            transcript_id=response.transcript_id,
-                            method=probe.method,
-                            url=url,
-                            status_code=response.status_code,
-                            role="exposed-file-response",
-                            note=f"{probe.method} {url} answered {response.status_code}: {matched}",
-                        )
-                    ],
-                    reproduce=make_reproduce(),
-                )
-            )
+            candidates.append(build_candidate(probe, origin, url, response, matched, ctx.fetch))
     ctx.log(
         "info",
         f"Exposed-file check: {probed} well-known path(s) probed, {len(candidates)} exposed.",
