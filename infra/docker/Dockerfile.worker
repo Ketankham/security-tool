@@ -20,6 +20,13 @@
 #             scans with an authorisation record). `ffuf -V` misreports the
 #             version ("2.1.0-dev"), so the real module version is recorded in
 #             /out/ffuf.version at build time and read by sentinel_recon/ffuf_wrapper.py.
+#   naabu     v2.7.0  (MIT)      — TCP port discovery (active: only for scans with an
+#             authorisation record). Connect scan only, so it needs no root and no
+#             libpcap; it is dynamically linked to libc only, which the Debian runtime
+#             image below provides.
+#   nmap is deliberately NOT installed: its licence (NPSL) is outside ADR-0002 and needs
+#   the owner's written sign-off first. sentinel_recon/nmap_wrapper.py is built and
+#   tested, finds no binary on PATH, and the ports step falls back to naabu-only results.
 FROM golang:1.27-bookworm AS recon-tools
 ENV CGO_ENABLED=0 GOBIN=/out GOFLAGS=-trimpath
 RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@v2.17.0 \
@@ -27,11 +34,13 @@ RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@v2.17.0 \
     && go install github.com/projectdiscovery/httpx/cmd/httpx@v1.6.10 \
     && mv /out/httpx /out/pd-httpx \
     && go install github.com/ffuf/ffuf/v2@v2.3.0 \
+    && go install github.com/projectdiscovery/naabu/v2/cmd/naabu@v2.7.0 \
     && go version -m /out/ffuf | awk '$1=="mod"{print $3}' > /out/ffuf.version \
     && /out/subfinder -version \
     && /out/tlsx -version \
     && /out/pd-httpx -version \
     && /out/ffuf -V \
+    && /out/naabu -version \
     && cat /out/ffuf.version
 
 FROM python:3.11-slim AS base
@@ -52,7 +61,7 @@ RUN uv sync --frozen --package sentinel-worker --no-dev
 
 ENV PATH="/app/.venv/bin:${PATH}"
 
-COPY --from=recon-tools /out/subfinder /out/tlsx /out/pd-httpx /out/ffuf /usr/local/bin/
+COPY --from=recon-tools /out/subfinder /out/tlsx /out/pd-httpx /out/ffuf /out/naabu /usr/local/bin/
 COPY --from=recon-tools /out/ffuf.version /usr/local/share/sentinel-tools/ffuf.version
 
 # The AUTH_ESTABLISHING and CRAWLING phases drive a real browser
