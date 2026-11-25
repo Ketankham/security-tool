@@ -310,6 +310,31 @@ export interface DiscoveredPath {
   crawl_seed: boolean;
 }
 
+// One open port found by the port scan (naabu, then nmap on the Full profile).
+export interface PortService {
+  id: string;
+  scan_id: string;
+  tool_run_id: string | null;
+  ip: string;
+  // Host names that resolved to this IP in this scan.
+  hosts: string[];
+  port: number;
+  protocol: string;
+  state: string;
+  service: string | null;
+  product: string | null;
+  version: string | null;
+  extra_info: string | null;
+  // "detected": nmap identified the service. "port_guess": the name is only
+  // guessed from the port number and must be shown as unverified.
+  confidence: "detected" | "port_guess" | string;
+  // nmap script id -> output text (plain text, never HTML). May be {}.
+  scripts: Record<string, string>;
+  cdn: string | null;
+  // "naabu" | "nmap"
+  found_by: string;
+}
+
 // --- Scan insight: activity log, found endpoints, evidence ---
 
 export interface ScanEvent {
@@ -358,6 +383,10 @@ export interface ToolRun {
   stderr_truncated: boolean;
   stdout_preview: string;
   stderr_preview: string;
+  // Optional extra text output (nmap "normal output"). Absent on older APIs:
+  // treat a missing value as 0 / null.
+  extra_output_chars?: number;
+  extra_output_label?: string | null;
 }
 
 export interface HttpProbe {

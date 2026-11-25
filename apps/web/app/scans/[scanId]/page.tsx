@@ -15,6 +15,7 @@ import { RetryModal } from "@/components/RetryModal";
 import { EndpointsTable } from "@/components/EndpointsTable";
 import { ReconPanel } from "@/components/ReconPanel";
 import { PathsPanel } from "@/components/PathsPanel";
+import { PortsPanel } from "@/components/PortsPanel";
 import { PhaseBoard } from "@/components/PhaseBoard";
 import { FindingsList, SeverityBar } from "@/components/FindingsList";
 import type { Finding, Scan } from "@/lib/types";
@@ -139,6 +140,11 @@ function ScanDetail({ scanId }: { scanId: string }) {
             scanId={scan.id}
             running={!terminal}
             enabled={scan.options?.dir_bruteforce === true}
+          />
+          <PortsPanel
+            scanId={scan.id}
+            running={!terminal}
+            enabled={scan.options?.port_scan === true}
           />
           {(scan.state === "complete" || scan.state === "failed") && (
             <EndpointsTable scanId={scan.id} targetId={scan.target_id} />

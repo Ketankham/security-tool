@@ -1,6 +1,10 @@
 // Pure helpers for the directory brute force results (PathsPanel + report).
 
+import { csvCell } from "./csv";
 import type { DiscoveredPath } from "./types";
+
+// Kept exported from here so existing imports keep working.
+export { csvCell };
 
 export const PATH_RENDER_LIMIT = 500; // rows drawn at once on the scan page
 export const REPORT_PATH_LIMIT = 1000; // rows drawn in the report; JSON has all
@@ -73,16 +77,6 @@ export function filterPaths(rows: DiscoveredPath[], f: PathFilter): DiscoveredPa
 }
 
 // --- CSV --------------------------------------------------------------------
-
-/** One CSV cell: always quoted, quotes doubled, and a cell that a spreadsheet
- * would read as a formula (starts with = + - @, tab or CR) gets a leading
- * single quote so it opens as text. */
-export function csvCell(value: string | number | boolean | null | undefined): string {
-  if (value === null || value === undefined) return '""';
-  let s = String(value);
-  if (typeof value === "string" && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
-  return `"${s.replace(/"/g, '""')}"`;
-}
 
 const CSV_HEADER = [
   "host",

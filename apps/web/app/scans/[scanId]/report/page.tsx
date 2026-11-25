@@ -8,7 +8,7 @@ import { scanStatus } from "@/lib/scan";
 import { CoverageCard } from "@/components/CoverageCard";
 import { FindingsList, SeverityBar } from "@/components/FindingsList";
 import type { Finding, Persona, Scan, ScanEndpoint, Target } from "@/lib/types";
-import type { DiscoveredPath, ScanAsset, ToolRun } from "@/lib/types";
+import type { DiscoveredPath, PortService, ScanAsset, ToolRun } from "@/lib/types";
 import { foundBy, hostStatus, techSummary } from "@/components/ReconPanel";
 import {
   REPORT_PATH_LIMIT,
@@ -19,6 +19,17 @@ import {
   isHttpUrl,
   verdictText,
 } from "@/lib/paths";
+import {
+  PORTS_CAVEAT,
+  REPORT_PORT_LIMIT,
+  UNVERIFIED_HINT,
+  hostsText,
+  isUnverified,
+  portLabel,
+  sortPorts,
+  summarise,
+  versionText,
+} from "@/lib/ports";
 
 // Step 1C: the scan's report on one printable page (Print / Save as PDF) and
 // as a JSON file. Built from the same data the scan page shows, so it can't
@@ -43,6 +54,7 @@ interface Data {
   assets: ScanAsset[];
   toolRuns: ToolRun[];
   paths: DiscoveredPath[];
+  ports: PortService[];
 }
 
 function Report({ scanId }: { scanId: string }) {
@@ -54,7 +66,7 @@ function Report({ scanId }: { scanId: string }) {
     (async () => {
       try {
         const scan = await api.getScan(scanId);
-        const [target, findings, endpoints, personas, assets, toolRuns, paths] = await Promise.all([
+        const [target, findings, endpoints, personas, assets, toolRuns, paths, ports] = await Promise.all([
           api.getTarget(scan.target_id),
           api.listFindings(scanId),
           api.listScanEndpoints(scanId),
@@ -63,9 +75,10 @@ function Report({ scanId }: { scanId: string }) {
           api.listToolRuns(scanId),
           // Optional section: an API without the endpoint must not break the report.
           api.listScanPaths(scanId).catch((): DiscoveredPath[] => []),
+          api.listScanPorts(scanId).catch((): PortService[] => []),
         ]);
         if (!cancelled)
-          setData({ scan, target, findings, endpoints, personas, assets, toolRuns, paths });
+          setData({ scan, target, findings, endpoints, personas, assets, toolRuns, paths, ports });
       } catch (e) {
         if (!cancelled) setError(e instanceof ApiError ? e.detail : String(e));
       }
@@ -91,7 +104,9 @@ function Report({ scanId }: { scanId: string }) {
     );
   if (!data) return <div className="notice">Loading report…</div>;
 
-  const { scan, target, findings, endpoints, assets, toolRuns, paths } = data;
+  const { scan, target, findings, endpoints, assets, toolRuns, paths, ports } = data;
+  const sortedPorts = sortPorts(ports);
+  const portSummary = summarise(ports);
   const sortedPaths = confirmedFirst(paths);
   const confirmedPaths = paths.filter((p) => p.verdict === "confirmed").length;
   const technologies = techSummary(assets);
@@ -132,6 +147,7 @@ function Report({ scanId }: { scanId: string }) {
       })),
       technologies,
       paths,
+      ports,
       tool_runs: toolRuns.map((r) => ({
         tool: r.tool,
         version: r.version,
@@ -347,6 +363,70 @@ function Report({ scanId }: { scanId: string }) {
               them.
             </p>
           )}
+        </div>
+      )}
+
+      {(ports.length > 0 || scan.options?.port_scan === true) && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <h2>Open ports and services ({ports.length})</h2>
+          {ports.length === 0 ? (
+            <p className="card-muted" style={{ marginTop: 0 }}>
+              No open ports are listed for this scan.
+            </p>
+          ) : (
+            <>
+              <p className="card-muted" style={{ marginTop: 0 }}>
+                {portSummary.total} open port(s) on {portSummary.ips} address(es). Script output is
+                left out here; details on the scan page.
+              </p>
+              <table className="report-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Address</th>
+                    <th scope="col">Port</th>
+                    <th scope="col">State</th>
+                    <th scope="col">Service</th>
+                    <th scope="col">Product and version</th>
+                    <th scope="col">CDN</th>
+                    <th scope="col">Found by</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedPorts.slice(0, REPORT_PORT_LIMIT).map((p) => (
+                    <tr key={p.id}>
+                      <td className="mono" style={{ wordBreak: "break-all" }}>
+                        {p.ip}
+                        {p.hosts.length > 0 && <div className="hint">{hostsText(p)}</div>}
+                      </td>
+                      <td className="mono">{portLabel(p)}</td>
+                      <td>{p.state}</td>
+                      <td>
+                        {p.service ?? "—"}
+                        {p.service && isUnverified(p) && (
+                          <>
+                            {" "}
+                            <span className="badge tone-muted" style={{ textTransform: "none" }} title={UNVERIFIED_HINT}>
+                              unverified
+                            </span>
+                          </>
+                        )}
+                      </td>
+                      <td>{versionText(p) || "—"}</td>
+                      <td>{p.cdn ?? "—"}</td>
+                      <td>{p.found_by}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {ports.length > REPORT_PORT_LIMIT && (
+                <p className="hint">
+                  Showing the first {REPORT_PORT_LIMIT} of {ports.length}; the JSON download has
+                  all of them.
+                </p>
+              )}
+            </>
+          )}
+          <p className="hint">{PORTS_CAVEAT}</p>
         </div>
       )}
 

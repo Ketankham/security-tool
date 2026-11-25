@@ -14,6 +14,7 @@ import type {
   OwnershipMethod,
   OwnershipVerifyResult,
   Persona,
+  PortService,
   Scan,
   ScanAsset,
   ScanAuthorisation,
@@ -239,6 +240,8 @@ export const api = {
   listScanAssets: (scanId: string) => request<ScanAsset[]>(`/scans/${scanId}/assets`),
   // Paths found by directory brute force (confirmed first, then category, path).
   listScanPaths: (scanId: string) => request<DiscoveredPath[]>(`/scans/${scanId}/paths`),
+  // Open ports and services (sorted by the server: ip, then port).
+  listScanPorts: (scanId: string) => request<PortService[]>(`/scans/${scanId}/ports`),
   getTranscript: (scanId: string, transcriptId: string) =>
     request<TranscriptDoc>(`/scans/${scanId}/transcripts/${transcriptId}`),
   getScanReport: (scanId: string) =>
@@ -268,11 +271,12 @@ export function downloadScanLog(scanId: string): Promise<void> {
   return downloadText(`/scans/${scanId}/events/download`, `scan-${scanId.slice(0, 8)}-log.txt`);
 }
 
-/** One tool run's full stdout or stderr as a text file. */
+/** One tool run's full stdout, stderr or extra output (nmap normal output)
+ * as a text file. */
 export function downloadToolOutput(
   scanId: string,
   run: { id: string; seq: number; tool: string },
-  stream: "stdout" | "stderr",
+  stream: "stdout" | "stderr" | "extra",
 ): Promise<void> {
   const tool = run.tool.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "");
   return downloadText(
