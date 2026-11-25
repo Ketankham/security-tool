@@ -5,6 +5,7 @@
 // the one place that swaps a header for a bearer token.
 
 import type {
+  DiscoveredPath,
   Finding,
   LoginTestResult,
   Organization,
@@ -236,6 +237,8 @@ export const api = {
   listScanEndpoints: (scanId: string) => request<ScanEndpoint[]>(`/scans/${scanId}/endpoints`),
   listToolRuns: (scanId: string) => request<ToolRun[]>(`/scans/${scanId}/tool-runs`),
   listScanAssets: (scanId: string) => request<ScanAsset[]>(`/scans/${scanId}/assets`),
+  // Paths found by directory brute force (confirmed first, then category, path).
+  listScanPaths: (scanId: string) => request<DiscoveredPath[]>(`/scans/${scanId}/paths`),
   getTranscript: (scanId: string, transcriptId: string) =>
     request<TranscriptDoc>(`/scans/${scanId}/transcripts/${transcriptId}`),
   getScanReport: (scanId: string) =>

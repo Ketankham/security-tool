@@ -14,6 +14,7 @@ import { CoverageCard } from "@/components/CoverageCard";
 import { RetryModal } from "@/components/RetryModal";
 import { EndpointsTable } from "@/components/EndpointsTable";
 import { ReconPanel } from "@/components/ReconPanel";
+import { PathsPanel } from "@/components/PathsPanel";
 import { PhaseBoard } from "@/components/PhaseBoard";
 import { FindingsList, SeverityBar } from "@/components/FindingsList";
 import type { Finding, Scan } from "@/lib/types";
@@ -104,7 +105,7 @@ function ScanDetail({ scanId }: { scanId: string }) {
               <PhaseBoard scan={scan} />
             </div>
 
-            <div className="card" style={{ margin: 0 }}>
+            <div className="card" style={{ margin: 0 }} id="findings">
               <h2>Findings</h2>
               <SeverityBar findings={findings ?? []} />
               <div style={{ marginTop: 14 }}>
@@ -134,6 +135,11 @@ function ScanDetail({ scanId }: { scanId: string }) {
           <AuthorisationCard scanId={scan.id} />
           <ActivityLog scanId={scan.id} running={!terminal} />
           <ReconPanel scanId={scan.id} running={!terminal} />
+          <PathsPanel
+            scanId={scan.id}
+            running={!terminal}
+            enabled={scan.options?.dir_bruteforce === true}
+          />
           {(scan.state === "complete" || scan.state === "failed") && (
             <EndpointsTable scanId={scan.id} targetId={scan.target_id} />
           )}

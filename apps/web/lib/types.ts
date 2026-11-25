@@ -278,6 +278,38 @@ export interface Finding {
   verification: Verification | null;
 }
 
+// --- Directory brute force results ---
+
+export type PathVerdict = "confirmed" | "not_confirmed" | "found";
+
+// One path found by directory/file brute force (GET /scans/{id}/paths). The
+// server sorts: confirmed first, then category, then path. `verdict` and
+// `category` stay plain strings so a value added later still renders.
+export interface DiscoveredPath {
+  id: string;
+  scan_id: string;
+  tool_run_id: string | null;
+  origin: string;
+  path: string;
+  url: string;
+  method: string;
+  status_code: number;
+  content_length: number | null;
+  words: number | null;
+  lines: number | null;
+  content_type: string | null;
+  redirect_location: string | null;
+  // config | backup | vcs | admin | api | common
+  category: string;
+  wordlist: string;
+  // "confirmed" | "not_confirmed" | "found"
+  verdict: string;
+  rule_id: string | null;
+  finding_id: string | null;
+  note: string | null;
+  crawl_seed: boolean;
+}
+
 // --- Scan insight: activity log, found endpoints, evidence ---
 
 export interface ScanEvent {

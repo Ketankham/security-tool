@@ -8,8 +8,17 @@ import { scanStatus } from "@/lib/scan";
 import { CoverageCard } from "@/components/CoverageCard";
 import { FindingsList, SeverityBar } from "@/components/FindingsList";
 import type { Finding, Persona, Scan, ScanEndpoint, Target } from "@/lib/types";
-import type { ScanAsset, ToolRun } from "@/lib/types";
+import type { DiscoveredPath, ScanAsset, ToolRun } from "@/lib/types";
 import { foundBy, hostStatus, techSummary } from "@/components/ReconPanel";
+import {
+  REPORT_PATH_LIMIT,
+  categoryLabel,
+  confirmedFirst,
+  findingAnchor,
+  formatSize,
+  isHttpUrl,
+  verdictText,
+} from "@/lib/paths";
 
 // Step 1C: the scan's report on one printable page (Print / Save as PDF) and
 // as a JSON file. Built from the same data the scan page shows, so it can't
@@ -33,6 +42,7 @@ interface Data {
   personas: Persona[];
   assets: ScanAsset[];
   toolRuns: ToolRun[];
+  paths: DiscoveredPath[];
 }
 
 function Report({ scanId }: { scanId: string }) {
@@ -44,16 +54,18 @@ function Report({ scanId }: { scanId: string }) {
     (async () => {
       try {
         const scan = await api.getScan(scanId);
-        const [target, findings, endpoints, personas, assets, toolRuns] = await Promise.all([
+        const [target, findings, endpoints, personas, assets, toolRuns, paths] = await Promise.all([
           api.getTarget(scan.target_id),
           api.listFindings(scanId),
           api.listScanEndpoints(scanId),
           api.listPersonas(scan.target_id),
           api.listScanAssets(scanId),
           api.listToolRuns(scanId),
+          // Optional section: an API without the endpoint must not break the report.
+          api.listScanPaths(scanId).catch((): DiscoveredPath[] => []),
         ]);
         if (!cancelled)
-          setData({ scan, target, findings, endpoints, personas, assets, toolRuns });
+          setData({ scan, target, findings, endpoints, personas, assets, toolRuns, paths });
       } catch (e) {
         if (!cancelled) setError(e instanceof ApiError ? e.detail : String(e));
       }
@@ -79,7 +91,9 @@ function Report({ scanId }: { scanId: string }) {
     );
   if (!data) return <div className="notice">Loading report…</div>;
 
-  const { scan, target, findings, endpoints, assets, toolRuns } = data;
+  const { scan, target, findings, endpoints, assets, toolRuns, paths } = data;
+  const sortedPaths = confirmedFirst(paths);
+  const confirmedPaths = paths.filter((p) => p.verdict === "confirmed").length;
   const technologies = techSummary(assets);
   const status = scanStatus(scan);
   const confirmed = findings.filter((f) => f.confidence === "confirmed").length;
@@ -117,6 +131,7 @@ function Report({ scanId }: { scanId: string }) {
         technology: a.tech,
       })),
       technologies,
+      paths,
       tool_runs: toolRuns.map((r) => ({
         tool: r.tool,
         version: r.version,
@@ -178,7 +193,7 @@ function Report({ scanId }: { scanId: string }) {
 
       <CoverageCard scan={scan} />
 
-      <div className="card" style={{ marginTop: 16 }}>
+      <div className="card" style={{ marginTop: 16 }} id="findings">
         <h2>Findings</h2>
         <FindingsList findings={findings} expanded />
       </div>
@@ -277,6 +292,61 @@ function Report({ scanId }: { scanId: string }) {
             </tbody>
           </table>
           <p className="hint">Versions are read from responses: leads to confirm, not proof.</p>
+        </div>
+      )}
+
+      {paths.length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <h2>Paths found by directory brute force ({paths.length})</h2>
+          <p className="card-muted" style={{ marginTop: 0 }}>
+            {confirmedPaths} confirmed by re-checking, {paths.length - confirmedPaths} not proven
+            (“Found” only means the server answered).
+          </p>
+          <table className="report-table">
+            <thead>
+              <tr>
+                <th scope="col">Host</th>
+                <th scope="col">Path</th>
+                <th scope="col">Status</th>
+                <th scope="col">Size</th>
+                <th scope="col">Category</th>
+                <th scope="col">Verdict</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedPaths.slice(0, REPORT_PATH_LIMIT).map((p) => (
+                <tr key={p.id}>
+                  <td className="mono" style={{ wordBreak: "break-all" }}>{p.origin}</td>
+                  <td className="mono" style={{ wordBreak: "break-all" }}>
+                    {isHttpUrl(p.url) ? (
+                      <a href={p.url} target="_blank" rel="noopener noreferrer">
+                        {p.path}
+                      </a>
+                    ) : (
+                      p.path
+                    )}
+                  </td>
+                  <td className="mono">{p.status_code}</td>
+                  <td>{formatSize(p.content_length)}</td>
+                  <td>{categoryLabel(p.category)}</td>
+                  <td>
+                    {p.verdict === "confirmed" && p.finding_id ? (
+                      <a href={findingAnchor(p.finding_id)}>{verdictText(p)}</a>
+                    ) : (
+                      verdictText(p)
+                    )}
+                    {p.note && <div className="hint">{p.note}</div>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {paths.length > REPORT_PATH_LIMIT && (
+            <p className="hint">
+              Showing the first {REPORT_PATH_LIMIT} of {paths.length}; the JSON download has all of
+              them.
+            </p>
+          )}
         </div>
       )}
 
