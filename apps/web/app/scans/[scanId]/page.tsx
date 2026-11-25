@@ -7,8 +7,11 @@ import { OrgGate } from "../../OrgGate";
 import { ApiError, api } from "@/lib/api";
 import { usePoll } from "@/lib/usePoll";
 import { isTerminal, scanStatus } from "@/lib/scan";
+import { activeToolsOf } from "@/lib/activeTools";
 import { ActivityLog } from "@/components/ActivityLog";
+import { AuthorisationCard } from "@/components/AuthorisationCard";
 import { CoverageCard } from "@/components/CoverageCard";
+import { RetryModal } from "@/components/RetryModal";
 import { EndpointsTable } from "@/components/EndpointsTable";
 import { ReconPanel } from "@/components/ReconPanel";
 import { PhaseBoard } from "@/components/PhaseBoard";
@@ -25,7 +28,7 @@ export default function ScanPage({ params }: { params: Promise<{ scanId: string 
 }
 
 function ScanDetail({ scanId }: { scanId: string }) {
-  const { data: scan, error } = usePoll<Scan>(() => api.getScan(scanId), 3000, true);
+  const { data: scan, error, refresh } = usePoll<Scan>(() => api.getScan(scanId), 3000, true);
   const terminal = scan ? isTerminal(scan.state) : false;
 
   // Findings poll alongside the scan, but stop once the scan is terminal.
@@ -66,8 +69,14 @@ function ScanDetail({ scanId }: { scanId: string }) {
                   View report
                 </Link>
               )}
+              {!terminal && <CancelButton scan={scan} onChanged={refresh} />}
               {terminal && <RetryButton scan={scan} />}
             </span>
+          </div>
+          <div className="hint" style={{ marginTop: 4 }}>
+            Started by {scan.requested_by ? <strong>{scan.requested_by}</strong> : "unknown"}
+            {" · "}
+            {new Date(scan.started_at ?? scan.created_at).toLocaleString()}
           </div>
 
           {scan.fail_reason && (
@@ -122,6 +131,7 @@ function ScanDetail({ scanId }: { scanId: string }) {
             </div>
           </div>
 
+          <AuthorisationCard scanId={scan.id} />
           <ActivityLog scanId={scan.id} running={!terminal} />
           <ReconPanel scanId={scan.id} running={!terminal} />
           {(scan.state === "complete" || scan.state === "failed") && (
@@ -138,14 +148,64 @@ function StatePill({ scan }: { scan: Scan }) {
   return <span className={`badge tone-${tone}`}>{label}</span>;
 }
 
+// Stops a running scan. Cancelling is cooperative: the API records the request
+// and the worker stops at its next checkpoint (about a second inside a tool),
+// so the scan stays "running" for a moment and then turns Cancelled.
+function CancelButton({ scan, onChanged }: { scan: Scan; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [requested, setRequested] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function cancel() {
+    if (
+      !window.confirm(
+        "Cancel this scan? Tests in progress are stopped and the scan can't be resumed " +
+          "(you can run it again afterwards).",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.cancelScan(scan.id);
+      setRequested(true);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        // Already finished (or finishing): just show its real state.
+        setError("This scan has already finished, so there is nothing to cancel.");
+      } else {
+        setError(err instanceof ApiError ? err.detail : String(err));
+      }
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  }
+
+  return (
+    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      {error && <span className="field-error" style={{ display: "inline" }}>{error}</span>}
+      {requested && !error && <span className="hint">Cancelling… stops at the next checkpoint.</span>}
+      <button onClick={cancel} disabled={busy || requested}>
+        {busy ? "Cancelling…" : requested ? "Cancel requested" : "Cancel scan"}
+      </button>
+    </span>
+  );
+}
+
 // v1 #2: any finished scan can be run again. A failed one gets a prominent
 // "Retry scan"; a completed one a quieter "Run again". Both start a fresh
 // scan of the same target (the old one stays as history) and open it.
+// A scan that used active tools answers 409: its retry must be re-authorised
+// (or drop the tools), which the dialog handles.
 function RetryButton({ scan }: { scan: Scan }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [needsConfirm, setNeedsConfirm] = useState<string | null>(null);
   const failed = scan.state !== "complete";
+  const tools = activeToolsOf(scan.options);
 
   async function retry() {
     setBusy(true);
@@ -154,7 +214,11 @@ function RetryButton({ scan }: { scan: Scan }) {
       const next = await api.retryScan(scan.id);
       router.push(`/scans/${next.id}`);
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : String(err));
+      if (err instanceof ApiError && err.status === 409 && tools.length > 0) {
+        setNeedsConfirm(err.detail);
+      } else {
+        setError(err instanceof ApiError ? err.detail : String(err));
+      }
       setBusy(false);
     }
   }
@@ -165,6 +229,15 @@ function RetryButton({ scan }: { scan: Scan }) {
       <button className={failed ? "btn-primary" : undefined} onClick={retry} disabled={busy}>
         {busy ? "Starting…" : failed ? "Retry scan" : "Run again"}
       </button>
+      {needsConfirm !== null && (
+        <RetryModal
+          scan={scan}
+          tools={tools}
+          serverMessage={needsConfirm}
+          onClose={() => setNeedsConfirm(null)}
+          onStarted={(id) => router.push(`/scans/${id}`)}
+        />
+      )}
     </span>
   );
 }

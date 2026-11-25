@@ -115,6 +115,19 @@ code,
   border-radius: 999px;
 }
 
+.user-chip {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+.user-chip strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .crumbs {
   margin: 18px 0 8px;
   color: var(--text-faint);
@@ -547,4 +560,48 @@ input[aria-invalid="true"] {
   padding: 4px 8px;
   border-top: 1px solid var(--border);
   vertical-align: top;
+}
+
+/* Active tools: tick boxes with a sentence beside them, and the dialog. */
+.check-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 8px 0 0;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+.check-row input[type="checkbox"] {
+  width: auto;
+  flex: none;
+  margin-top: 4px;
+}
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(3, 6, 12, 0.7);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 16px 16px;
+  overflow-y: auto;
+}
+.modal {
+  width: 100%;
+  max-width: 560px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+.modal h2 {
+  margin-top: 0;
+}
+.modal .modal-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
 }
