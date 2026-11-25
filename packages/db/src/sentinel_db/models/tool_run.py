@@ -34,7 +34,7 @@ class ToolRunRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     binary: Mapped[str | None] = mapped_column(String(100), nullable=True)
     version: Mapped[str | None] = mapped_column(String(50), nullable=True)
     command: Mapped[str] = mapped_column(String(4000), default="")
-    # ok | failed | timed_out | not_installed | skipped
+    # ok | failed | timed_out | stopped | cancelled | not_installed | skipped
     status: Mapped[str] = mapped_column(String(20))
     skip_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

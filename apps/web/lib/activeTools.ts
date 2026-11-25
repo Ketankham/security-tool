@@ -44,38 +44,70 @@ export function formatDuration(seconds: number): string {
   return rest ? `${hours} h ${rest} min` : `${hours} h`;
 }
 
-function humanise(key: string): string {
-  const words = key
-    .replace(/_(s|sec|secs|seconds)$/i, "")
-    .replace(/[_-]+/g, " ")
-    .trim();
-  return words ? words.charAt(0).toUpperCase() + words.slice(1) : key;
-}
-
 export interface EstimateLine {
   label: string;
   value: string;
 }
 
-export function describeEstimate(estimate: unknown, maxDepth = 2): EstimateLine[] {
+function num(obj: Record<string, unknown>, key: string): number | null {
+  const v = obj[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return v !== null && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+}
+
+// GET /scan-estimate: { dir_bruteforce, port_scan, all_ports (each null or a
+// worst-case block), total_seconds }. Rendered as one plain sentence per tool
+// that is switched on, plus the worst-case total. Missing or odd fields are
+// skipped, never shown as NaN.
+export function describeEstimate(estimate: unknown): EstimateLine[] {
+  const root = asRecord(estimate);
+  if (!root) return [];
   const lines: EstimateLine[] = [];
-  const walk = (obj: unknown, path: string[], depth: number) => {
-    if (obj === null || typeof obj !== "object" || Array.isArray(obj)) return;
-    for (const [key, val] of Object.entries(obj as Record<string, unknown>)) {
-      const label = [...path, humanise(key)].join(" · ");
-      if (typeof val === "number") {
-        const isSeconds = /(^|_)(s|sec|secs|seconds)$/i.test(key);
-        lines.push({
-          label,
-          value: isSeconds ? formatDuration(val) : val.toLocaleString(),
-        });
-      } else if (typeof val === "string" && val.length <= 80) {
-        lines.push({ label, value: val });
-      } else if (val && typeof val === "object" && depth < maxDepth) {
-        walk(val, [...path, humanise(key)], depth + 1);
-      }
-    }
-  };
-  walk(estimate, [], 1);
+
+  const dir = asRecord(root.dir_bruteforce);
+  if (dir) {
+    const entries = num(dir, "entries");
+    const hosts = num(dir, "max_hosts");
+    const rps = num(dir, "requests_per_second");
+    const perHost = num(dir, "seconds_per_host");
+    const total = num(dir, "seconds_total");
+    const parts: string[] = [];
+    if (entries !== null && hosts !== null)
+      parts.push(`${entries.toLocaleString()} paths on up to ${hosts} host${hosts === 1 ? "" : "s"}`);
+    if (rps !== null) parts.push(`${rps}/s`);
+    if (perHost !== null) parts.push(`about ${formatDuration(perHost)} per host`);
+    if (total !== null) parts.push(`at most ${formatDuration(total)}`);
+    if (parts.length) lines.push({ label: "Directory brute force", value: parts.join(", ") });
+  }
+
+  for (const [key, label, scope] of [
+    ["port_scan", "Port scan", "top"],
+    ["all_ports", "All 65,535 ports", "all"],
+  ] as const) {
+    const block = asRecord(root[key]);
+    if (!block) continue;
+    const ports = num(block, "ports_per_ip");
+    const ips = num(block, "max_ips");
+    const pps = num(block, "packets_per_second");
+    const perIp = num(block, "seconds_per_ip");
+    const total = num(block, "seconds_total");
+    const parts: string[] = [];
+    if (ports !== null && ips !== null)
+      parts.push(
+        `${scope === "top" ? "top " : ""}${ports.toLocaleString()} ports on up to ${ips} address${ips === 1 ? "" : "es"}`,
+      );
+    if (pps !== null) parts.push(`${pps} packets/s`);
+    if (perIp !== null) parts.push(`about ${formatDuration(perIp)} per address`);
+    if (total !== null) parts.push(`at most ${formatDuration(total)}`);
+    if (parts.length) lines.push({ label, value: parts.join(", ") });
+  }
+
+  const total = num(root, "total_seconds");
+  if (lines.length && total !== null) lines.push({ label: "Worst-case total", value: formatDuration(total) });
   return lines;
 }

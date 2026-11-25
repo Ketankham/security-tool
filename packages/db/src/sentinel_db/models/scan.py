@@ -50,6 +50,9 @@ class Scan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     fail_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     is_degraded: Mapped[bool] = mapped_column(Boolean, default=False)
     degraded_reasons: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    # The signed-in user who started the scan (the verified identity the API
+    # got from the sign-in proxy); None when no identity was available.
+    requested_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Chosen at Run scan: {"speed": "gentle|normal|fast", "depth": "quick|standard|deep"}.
     # See sentinel_core.scan_options for what each means.
     options: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))

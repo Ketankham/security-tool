@@ -14,8 +14,16 @@ def tool_run_from(
     version: str | None,
     results_count: int,
 ) -> ToolRun:
+    skip_reason: str | None = None
     if not result.ran:
         status = "not_installed"
+        skip_reason = f"{binary or tool} is not installed on the worker"
+    elif result.cancelled:
+        status = "cancelled"
+        skip_reason = f"Cancelled by {result.cancelled_by or 'unknown'}"
+    elif result.stopped_reason is not None:
+        status = "stopped"
+        skip_reason = result.stopped_reason
     elif result.timed_out:
         status = "timed_out"
     elif result.returncode != 0:
@@ -35,7 +43,7 @@ def tool_run_from(
         stdout=result.stdout,
         stderr=result.stderr,
         results_count=results_count,
-        skip_reason=f"{binary or tool} is not installed on the worker" if not result.ran else None,
+        skip_reason=skip_reason,
     )
 
 

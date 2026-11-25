@@ -8,6 +8,7 @@ from .organization import Organization, User
 from .persona import Credential, Persona
 from .report import Report
 from .scan import Scan, ScanPhase, ScanPolicy
+from .scan_authorisation import ScanAuthorisation
 from .scan_event import ScanEvent
 from .target import ScopeRule, Target
 from .tool_run import ToolRunRecord
@@ -25,6 +26,7 @@ __all__ = [
     "Scan",
     "ScanPhase",
     "ScanEvent",
+    "ScanAuthorisation",
     "ToolRunRecord",
     "Asset",
     "Endpoint",

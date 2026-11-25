@@ -26,6 +26,7 @@ satisfied by finishing instead of pausing).
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import json
 import re
@@ -65,7 +66,9 @@ from sqlalchemy.orm import selectinload
 
 from . import recon_adapter
 from .access_control_adapter import AccessControlStats, run_access_control_and_verify
+from .active_tools import authorised_tools
 from .auth_adapter import establish_persona
+from .cancel import CancelWatch, ScanCancelled, run_until_cancelled
 from .config import Settings, get_settings
 from .passive_adapter import PassiveStats, run_passive_and_verify
 from .report_adapter import build_scan_report, persist_report
@@ -515,6 +518,28 @@ async def _run_passive(
         await engine.aclose()
 
 
+async def _run_active_tools(
+    session: AsyncSession, scan: Scan, scan_log: ScanLog | NullScanLog, watch: CancelWatch
+) -> None:
+    """Active tools (directory brute force, port scanning), inside RECON.
+
+    The authorisation check is the gate: a tool runs only when this scan's
+    authorisation record (a named, signed-in user) covers it. This build has no
+    active tool implemented yet (scan_options.IMPLEMENTED_ACTIVE_TOOLS), so what
+    is authorised is reported as not run, never silently dropped."""
+    authorised = await authorised_tools(session, scan, scan_log)
+    for tool in scan_options_mod.ACTIVE_TOOL_KEYS:
+        if tool not in authorised:
+            continue
+        await watch.raise_if_cancelled()
+        label = scan_options_mod.ACTIVE_TOOL_LABELS[tool]
+        if tool not in scan_options_mod.IMPLEMENTED_ACTIVE_TOOLS:
+            note = f"{label} was requested but is not implemented in this version; skipped."
+            scan_log.add("scan", note, level="warn")
+            scan.is_degraded = True
+            scan.degraded_reasons = [*scan.degraded_reasons, note]
+
+
 async def _first_invalid_regex_rule(
     session: AsyncSession, target_id: uuid.UUID
 ) -> ScopeRule | None:
@@ -533,8 +558,14 @@ async def run_scan(scan_id: str) -> None:
     scan_log = ScanLog(uuid.UUID(scan_id))
     scan_log.start()
     token = _CURRENT_LOG.set(scan_log)
+    cancel_redis: Redis = Redis.from_url(get_settings().redis_url)
+    watch = CancelWatch(cancel_redis, scan_id)
     try:
-        await _run_scan(scan_id, scan_log)
+        await _run_scan(scan_id, scan_log, watch)
+    except ScanCancelled as cancelled:
+        # Not a failure: someone pressed Cancel. Whatever the scan had saved stays.
+        await mark_scan_cancelled(scan_id, cancelled.by, scan_log=scan_log)
+        await watch.clear()
     except Exception as exc:
         scan_log.add(
             "scan",
@@ -546,9 +577,11 @@ async def run_scan(scan_id: str) -> None:
     finally:
         _CURRENT_LOG.reset(token)
         await scan_log.close()
+        with contextlib.suppress(Exception):
+            await cancel_redis.aclose()
 
 
-async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
+async def _run_scan(scan_id: str, scan_log: ScanLog, watch: CancelWatch) -> None:
     async with open_session() as session:
         # `selectinload` here matters, not just for speed: AsyncSession
         # forbids implicit lazy I/O on plain attribute access (`scan.phases`
@@ -567,6 +600,19 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
             )
             return
 
+        if scan.state in TERMINAL_STATES:
+            # e.g. cancelled while it sat in the queue: nothing to run.
+            scan_log.add(
+                "scan",
+                f"Not started: this scan was already {scan.state.value} before the worker "
+                "picked it up.",
+            )
+            log.info("scan_runner.already_terminal", scan_id=scan_id, state=scan.state.value)
+            await watch.clear()
+            return
+        # Cancelled in the instant between being queued and being picked up.
+        await watch.raise_if_cancelled()
+
         machine = ScanStateMachine(current=scan.state, paused_from=scan.paused_from)
         speed_rps, depth_pages = scan_options_mod.resolve(scan.options)
         recon_profile = scan_options_mod.resolve_recon_profile(scan.options)
@@ -574,10 +620,11 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
             "scan",
             f"Scan started for {target.root_domain} (speed {speed_rps:g} requests/second, "
             f"up to {depth_pages} pages per identity, {recon_profile} recon profile; "
-            f"started by: {scan.triggered_by}).",
+            f"started by: {scan.triggered_by}; requested by: {scan.requested_by or 'unknown'}).",
         )
 
         # --- Phase: SCOPE_VERIFYING ---
+        await watch.raise_if_cancelled()
         phase = await _get_or_create_phase(session, scan, ScanPhaseName.SCOPE_VERIFYING)
         machine.transition(ScanState.SCOPE_VERIFYING)
         scan.state = machine.current
@@ -628,6 +675,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
         await session.commit()
 
         # --- Phase: RECON ---
+        await watch.raise_if_cancelled()
         phase = await _get_or_create_phase(session, scan, ScanPhaseName.RECON)
         machine.transition(ScanState.RECON)
         scan.state = machine.current
@@ -647,19 +695,23 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
             f"Recon: subdomain discovery (subfinder, passive), DNS, then an HTTP probe of each "
             f"in-scope host at {speed_rps:g} requests/second. This can take a few minutes.",
         )
-        recon_result = await run_recon(
-            target.root_domain,
-            host_check=recon_adapter.host_check_for(recon_guard),
-            requests_per_second=speed_rps,
-            allow_private_ips=get_settings().allow_private_addresses,
-            profile=recon_profile,
-            log=lambda level, message: scan_log.add("recon", message, level=level),
+        recon_result = await run_until_cancelled(
+            run_recon(
+                target.root_domain,
+                host_check=recon_adapter.host_check_for(recon_guard),
+                requests_per_second=speed_rps,
+                allow_private_ips=get_settings().allow_private_addresses,
+                profile=recon_profile,
+                log=lambda level, message: scan_log.add("recon", message, level=level),
+            ),
+            watch,
         )
         recon_adapter.log_recon(scan_log, recon_result)
         session.add_all(recon_adapter.asset_rows(scan.id, recon_result))
         session.add_all(
             recon_adapter.tool_run_records(scan.id, recon_result.tool_runs, phase="recon")
         )
+        await _run_active_tools(session, scan, scan_log, watch)
         extra_seeds = recon_adapter.extra_crawl_seeds(
             recon_result, root_domain=target.root_domain, scope_guard=recon_guard
         )
@@ -703,6 +755,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
         configured_personas = [p for p in personas if p.login_recipe]
 
         # --- Phase: AUTH_ESTABLISHING ---
+        await watch.raise_if_cancelled()
         phase = await _get_or_create_phase(session, scan, ScanPhaseName.AUTH_ESTABLISHING)
         machine.transition(ScanState.AUTH_ESTABLISHING)
         scan.state = machine.current
@@ -802,6 +855,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
         await session.commit()
 
         # --- Phase: CRAWLING ---
+        await watch.raise_if_cancelled()
         phase = await _get_or_create_phase(session, scan, ScanPhaseName.CRAWLING)
         await _start_phase(session, phase)
         await session.commit()
@@ -811,18 +865,21 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
             async with async_playwright() as pw:
                 browser = await pw.chromium.launch(**chromium_launch_kwargs())
                 try:
-                    surfaces = await _run_crawling(
-                        target=target,
-                        scope_rules=scope_rules,
-                        configured_personas=configured_personas,
-                        in_memory_sessions=in_memory_sessions,
-                        redis_client=redis_client,
-                        browser=browser,
-                        root_url=recon_root_url,
-                        landing_pages=landing_pages,
-                        options=scan.options,
-                        scan_log=scan_log,
-                        extra_seeds=extra_seeds,
+                    surfaces = await run_until_cancelled(
+                        _run_crawling(
+                            target=target,
+                            scope_rules=scope_rules,
+                            configured_personas=configured_personas,
+                            in_memory_sessions=in_memory_sessions,
+                            redis_client=redis_client,
+                            browser=browser,
+                            root_url=recon_root_url,
+                            landing_pages=landing_pages,
+                            options=scan.options,
+                            scan_log=scan_log,
+                            extra_seeds=extra_seeds,
+                        ),
+                        watch,
                     )
                 finally:
                     await browser.close()
@@ -844,6 +901,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
         await session.commit()
 
         # --- Phase: SURFACE_MAPPING ---
+        await watch.raise_if_cancelled()
         phase = await _get_or_create_phase(session, scan, ScanPhaseName.SURFACE_MAPPING)
         await _start_phase(session, phase)
         await session.commit()
@@ -868,6 +926,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
         await session.commit()
 
         # --- Phase: PASSIVE_CHECKS (headers, cookies, CORS, exposed files, TLS) ---
+        await watch.raise_if_cancelled()
         phase = await _get_or_create_phase(session, scan, ScanPhaseName.PASSIVE_CHECKS)
         machine.transition(ScanState.PASSIVE_CHECKS)
         scan.state = machine.current
@@ -939,6 +998,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
         await session.commit()
 
         # --- Phase: ACCESS_CONTROL (the moat — docs/03 §4) ---
+        await watch.raise_if_cancelled()
         phase = await _get_or_create_phase(session, scan, ScanPhaseName.ACCESS_CONTROL)
         await _start_phase(session, phase)
         await session.commit()
@@ -988,6 +1048,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
             ]
 
         # --- Phases: ACTIVE_INJECTION, SESSION_CHECKS, BUSINESS_LOGIC (SKIPPED) ---
+        await watch.raise_if_cancelled()
         for phase_name, note in (
             (ScanPhaseName.ACTIVE_INJECTION, SKIPPED_ACTIVE_INJECTION_NOTE),
             (ScanPhaseName.SESSION_CHECKS, SKIPPED_SESSION_CHECKS_NOTE),
@@ -1005,6 +1066,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
         # _run_access_control (Phase 9 is check-agnostic, and each check
         # engine runs it against its own candidates as it produces them —
         # docs/02 Phase 9). This phase records that it happened.
+        await watch.raise_if_cancelled()
         phase = await _get_or_create_phase(session, scan, ScanPhaseName.VERIFYING)
         machine.transition(ScanState.VERIFYING)
         scan.state = machine.current
@@ -1029,6 +1091,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
         # to FIXED/REGRESSED) and CVSS/clustering are not implemented yet —
         # every finding's fingerprint is assigned (docs/01 §6.6) so a future
         # slice can add that lookup without a data migration.
+        await watch.raise_if_cancelled()
         phase = await _get_or_create_phase(session, scan, ScanPhaseName.TRIAGING)
         machine.transition(ScanState.TRIAGING)
         scan.state = machine.current
@@ -1047,6 +1110,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog) -> None:
         # narrative, and the attestation letter are M3/Verified-tier work —
         # ScanReport.to_dict()'s own scope_note says so in the artifact
         # itself, not just here.
+        await watch.raise_if_cancelled()
         phase = await _get_or_create_phase(session, scan, ScanPhaseName.REPORTING)
         machine.transition(ScanState.REPORTING)
         scan.state = machine.current
@@ -1142,6 +1206,44 @@ async def mark_scan_failed(scan_id: str, reason: str) -> bool:
     scan_log.add("scan", f"The scan stopped{where}: {reason}", level="error")
     await scan_log.flush()
     log.info("scan_runner.marked_failed", scan_id=scan_id, phase=running)
+    return True
+
+
+def _close_scan_as_cancelled(scan: Scan, by: str) -> None:
+    """Terminal CANCELLED; any phase left RUNNING is closed as FAILED saying why,
+    so the dashboard shows where it was stopped."""
+    now = datetime.now(UTC)
+    scan.state = ScanState.CANCELLED
+    scan.fail_reason = f"Cancelled by {by}."[:1000]
+    scan.finished_at = now
+    for phase in scan.phases:
+        if phase.status is PhaseStatus.RUNNING:
+            phase.status = PhaseStatus.FAILED
+            phase.finished_at = now
+            phase.error = f"Cancelled by {by}"[:2000]
+
+
+async def mark_scan_cancelled(
+    scan_id: str, by: str, *, scan_log: ScanLog | NullScanLog | None = None
+) -> bool:
+    """Called by run_scan when a cancel was requested. Opens its own session
+    (the scan's own was rolled back by the exception that unwound it), so it
+    stands on what was committed. Returns False when the scan is missing or
+    already terminal."""
+    async with open_session() as session:
+        scan = await session.get(Scan, uuid.UUID(scan_id), options=[selectinload(Scan.phases)])
+        if scan is None or scan.state in TERMINAL_STATES:
+            return False
+        _close_scan_as_cancelled(scan, by)
+        await session.commit()
+    message = f"Scan cancelled by {by}."
+    if scan_log is not None:
+        scan_log.add("scan", message, level="warn")
+    else:
+        resumed = await ScanLog.resume(uuid.UUID(scan_id))
+        resumed.add("scan", message, level="warn")
+        await resumed.flush()
+    log.info("scan_runner.marked_cancelled", scan_id=scan_id, by=by)
     return True
 
 
