@@ -33,6 +33,8 @@ class PassiveStats:
     per_check: dict[str, int] = field(default_factory=dict)
     failed: dict[str, str] = field(default_factory=dict)
     origins: list[str] = field(default_factory=list)
+    # Candidates left out because another step already confirmed the same finding.
+    skipped_duplicates: int = 0
 
 
 def _origin(url: str) -> str:
@@ -95,18 +97,28 @@ def build_inputs(
     return origins, pages, apis, cookies
 
 
-def _build_finding(
+def candidate_fingerprint(candidate: PassiveCandidate) -> str:
+    """The stable identity of what a candidate reports (rule, host, subject):
+    the same value ``build_finding`` stores, so two steps that find the same
+    thing can recognise it without building the Finding first."""
+    return Finding.compute_fingerprint(
+        rule_id=candidate.rule_id,
+        endpoint_template=candidate.origin,
+        param=candidate.subject,
+        persona_pair="",
+    )
+
+
+def build_finding(
     *, scan: Scan, candidate: PassiveCandidate, outcome: VerificationOutcome | None
 ) -> Finding:
+    """A Finding (with Evidence and, when ``outcome`` is given, a Verification)
+    for a passive-style candidate. CONFIRMED only when the outcome passed;
+    shared by the passive checks and the directory brute force step."""
     first = candidate.evidence[0] if candidate.evidence else None
     finding = Finding(
         scan_id=scan.id,
-        fingerprint=Finding.compute_fingerprint(
-            rule_id=candidate.rule_id,
-            endpoint_template=candidate.origin,
-            param=candidate.subject,
-            persona_pair="",
-        ),
+        fingerprint=candidate_fingerprint(candidate),
         rule_id=candidate.rule_id,
         title=candidate.title[:300],
         cwe=candidate.cwe,
@@ -157,7 +169,11 @@ async def run_passive_and_verify(
     http_engine: HttpEngine,
     scope_guard: ScopeGuard,
     log: ScanLog | NullScanLog = NULL_LOG,
+    skip_fingerprints: set[str] | None = None,
 ) -> tuple[PassiveStats, list[Finding], list[TranscriptRecord]]:
+    """``skip_fingerprints``: findings another step of this scan already
+    confirmed (directory brute force: an exposed .env it re-checked twice).
+    A passive candidate with one of these fingerprints is not reported again."""
     origins, pages, apis, cookies = build_inputs(
         surfaces=surfaces,
         personas=personas,
@@ -190,7 +206,15 @@ async def run_passive_and_verify(
     )
     findings: list[Finding] = []
     records: dict[str, TranscriptRecord] = {}
+    skip = skip_fingerprints or set()
     for candidate in result.candidates:
+        if skip and candidate_fingerprint(candidate) in skip:
+            stats.skipped_duplicates += 1
+            log.add(
+                "passive_checks",
+                f"Skipped {candidate.title}: already confirmed by directory brute force.",
+            )
+            continue
         outcome: VerificationOutcome | None = None
         if candidate.reproduce is not None:
             try:
@@ -201,7 +225,7 @@ async def run_passive_and_verify(
                     f"Could not re-check {candidate.rule_id} ({candidate.origin}): {exc}",
                     level="warn",
                 )
-        finding = _build_finding(scan=scan, candidate=candidate, outcome=outcome)
+        finding = build_finding(scan=scan, candidate=candidate, outcome=outcome)
         findings.append(finding)
         for ref in candidate.evidence:
             records.setdefault(

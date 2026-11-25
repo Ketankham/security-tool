@@ -10,13 +10,22 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import PlainTextResponse
 from sentinel_core.transcript import LocalTranscriptStore
-from sentinel_db.models import Asset, Endpoint, Scan, ScanEvent, ToolRunRecord, TranscriptRecord
-from sqlalchemy import func, select
+from sentinel_db.models import (
+    Asset,
+    DiscoveredPath,
+    Endpoint,
+    Scan,
+    ScanEvent,
+    ToolRunRecord,
+    TranscriptRecord,
+)
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings, get_settings
 from ..deps import get_owned_scan, get_session
 from ..schemas.scan_insight import (
+    DiscoveredPathOut,
     ScanAssetOut,
     ScanEndpointOut,
     ScanEventOut,
@@ -195,6 +204,32 @@ async def download_tool_output(
             )
         },
     )
+
+
+@router.get("/scans/{scan_id}/paths", response_model=list[DiscoveredPathOut])
+async def list_scan_paths(
+    scan: Scan = Depends(get_owned_scan),
+    session: AsyncSession = Depends(get_session),
+) -> list[DiscoveredPathOut]:
+    """Paths found by directory/file brute force: confirmed ones first, then
+    by category and path. Empty for a scan that did not use the tool."""
+    rows = (
+        (
+            await session.execute(
+                select(DiscoveredPath)
+                .where(DiscoveredPath.scan_id == scan.id)
+                .order_by(
+                    case((DiscoveredPath.verdict == "confirmed", 0), else_=1),
+                    DiscoveredPath.category,
+                    DiscoveredPath.path,
+                    DiscoveredPath.origin,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [DiscoveredPathOut.model_validate(r) for r in rows]
 
 
 @router.get("/scans/{scan_id}/assets", response_model=list[ScanAssetOut])

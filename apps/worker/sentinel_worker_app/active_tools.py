@@ -76,3 +76,11 @@ async def authorised_tools(
             f"{_names(allowed)}.",
         )
     return allowed
+
+
+async def authorising_user(session: AsyncSession, scan: Scan) -> str:
+    """Who confirmed the authorisation for this scan ('unknown' if no record)."""
+    row = (
+        await session.execute(select(ScanAuthorisation).where(ScanAuthorisation.scan_id == scan.id))
+    ).scalar_one_or_none()
+    return (row.username or "").strip() if row is not None and row.username else "unknown"

@@ -3,6 +3,7 @@ and so the before_flush invariant in finding.py is always registered."""
 
 from ..base import Base
 from .asset import Asset, Endpoint, Parameter
+from .discovered_path import DiscoveredPath
 from .finding import Evidence, Finding, Verification
 from .organization import Organization, User
 from .persona import Credential, Persona
@@ -28,6 +29,7 @@ __all__ = [
     "ScanEvent",
     "ScanAuthorisation",
     "ToolRunRecord",
+    "DiscoveredPath",
     "Asset",
     "Endpoint",
     "Parameter",

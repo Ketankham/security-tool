@@ -66,7 +66,11 @@ function FindingRow({ finding: f, expanded }: { finding: Finding; expanded: bool
   const expect = typeof f.reproduction.expect === "string" ? f.reproduction.expect : null;
   const url = typeof f.reproduction.url === "string" ? f.reproduction.url : null;
   return (
-    <div className="list-item" style={{ alignItems: "flex-start", flexDirection: "column" }}>
+    <div
+      className="list-item"
+      id={`finding-${f.id}`}
+      style={{ alignItems: "flex-start", flexDirection: "column" }}
+    >
       <div style={{ display: "flex", alignItems: "center", gap: 10, width: "100%" }}>
         <span className={`badge ${sev.tone}`}>{sev.label}</span>
         <span className="grow title">{f.title}</span>

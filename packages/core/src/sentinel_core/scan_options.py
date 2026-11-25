@@ -59,9 +59,9 @@ def resolve_recon_profile(options: dict | None) -> ReconProfile:
 
 ACTIVE_TOOL_KEYS: tuple[str, ...] = ("dir_bruteforce", "port_scan", "all_ports")
 # The tools this build can actually run. A request for any other is refused by
-# the API ("... is not available yet.") and skipped by the worker. Later
-# releases add "dir_bruteforce", then "port_scan" and "all_ports".
-IMPLEMENTED_ACTIVE_TOOLS: tuple[str, ...] = ()
+# the API ("... is not available yet.") and skipped by the worker. A later
+# release adds "port_scan" and "all_ports".
+IMPLEMENTED_ACTIVE_TOOLS: tuple[str, ...] = ("dir_bruteforce",)
 
 ACTIVE_TOOL_LABELS: dict[str, str] = {
     "dir_bruteforce": "Directory brute force",
@@ -90,6 +90,8 @@ ALL_PORTS_MAX_IPS = 3
 
 # Wall-clock budgets in seconds; a step stops (and says so) when its budget is spent.
 DIR_BUDGET_S: dict[str, int] = {"light": 1800, "full": 3600}
+# The longest one host's brute force may run (ffuf's own -maxtime), by recon profile.
+DIR_HOST_CAP_S: dict[str, int] = {"light": 900, "full": 1800}
 PORT_BUDGET_S: dict[str, int] = {"light": 1200, "full": 2700}
 ALL_PORTS_EXTRA_BUDGET_S = 1800
 
@@ -141,7 +143,7 @@ def estimate(options: dict | None) -> dict:
         entries = WORDLIST_MAX_ENTRIES[wordlist]
         budget = DIR_BUDGET_S[profile]
         hosts = DIR_MAX_HOSTS[profile]
-        per_host = min(entries / rps, budget)
+        per_host = min(entries / rps, DIR_HOST_CAP_S[profile], budget)
         directory = {
             "wordlist": wordlist,
             "entries": entries,

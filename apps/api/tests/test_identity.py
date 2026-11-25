@@ -297,7 +297,7 @@ async def test_the_proxy_secret_is_read_from_sentinel_proxy_secret(monkeypatch):
 async def test_whoami_reports_the_available_tools_and_the_statement(identity_env):
     async with await _client() as client:
         body = (await client.get("/whoami", headers=GOOD)).json()
-    assert body["available_tools"] == []  # no active tool is implemented in this build
+    assert body["available_tools"] == ["dir_bruteforce"]  # the one active tool in this build
     assert body["statement"]["version"] == "1"
     assert "{client}" in body["statement"]["template"]
     assert "{target}" in body["statement"]["template"]
@@ -305,10 +305,14 @@ async def test_whoami_reports_the_available_tools_and_the_statement(identity_env
 
 
 async def test_whoami_lists_implemented_tools(identity_env, monkeypatch):
-    monkeypatch.setattr("sentinel_core.scan_options.IMPLEMENTED_ACTIVE_TOOLS", ("dir_bruteforce",))
+    monkeypatch.setattr(
+        "sentinel_core.scan_options.IMPLEMENTED_ACTIVE_TOOLS",
+        ("dir_bruteforce", "port_scan"),
+    )
     async with await _client() as client:
         assert (await client.get("/whoami", headers=GOOD)).json()["available_tools"] == [
-            "dir_bruteforce"
+            "dir_bruteforce",
+            "port_scan",
         ]
 
 

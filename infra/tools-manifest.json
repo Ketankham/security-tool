@@ -28,6 +28,24 @@
       "source": "https://github.com/projectdiscovery/tlsx",
       "installed_as": "tlsx",
       "used_for": "TLS grading (installed; not yet called by a scan)."
+    },
+    {
+      "name": "ffuf",
+      "module": "github.com/ffuf/ffuf/v2",
+      "version": "v2.3.0",
+      "licence": "MIT",
+      "source": "https://github.com/ffuf/ffuf",
+      "installed_as": "ffuf",
+      "used_for": "Directory/file brute force (active; needs authorisation)"
+    },
+    {
+      "name": "naabu",
+      "module": "github.com/projectdiscovery/naabu/v2/cmd/naabu",
+      "version": "v2.7.0",
+      "licence": "MIT",
+      "source": "https://github.com/projectdiscovery/naabu",
+      "installed_as": "naabu",
+      "used_for": "Port scan (active; needs authorisation)"
     }
   ]
 }

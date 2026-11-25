@@ -66,10 +66,11 @@ from sqlalchemy.orm import selectinload
 
 from . import recon_adapter
 from .access_control_adapter import AccessControlStats, run_access_control_and_verify
-from .active_tools import authorised_tools
+from .active_tools import authorised_tools, authorising_user
 from .auth_adapter import establish_persona
 from .cancel import CancelWatch, ScanCancelled, run_until_cancelled
 from .config import Settings, get_settings
+from .dir_bruteforce_adapter import DirStats, run_dir_bruteforce
 from .passive_adapter import PassiveStats, run_passive_and_verify
 from .report_adapter import build_scan_report, persist_report
 from .scan_log import NULL_LOG, NullScanLog, ScanLog
@@ -332,6 +333,7 @@ async def _run_crawling(
     options: dict | None = None,
     scan_log: ScanLog | NullScanLog = NULL_LOG,
     extra_seeds: list[str] | None = None,
+    path_seeds: list[str] | None = None,
 ) -> list[SurfaceMap]:
     """``root_url`` defaults to the target's own root URL; tests pass an
     explicit one — see _run_auth_establishing's docstring for why."""
@@ -391,12 +393,20 @@ async def _run_crawling(
         *(p.login_recipe.get("start_url") for p in configured_personas if p.login_recipe),
         *landing_pages.values(),
         *(extra_seeds or []),
+        *(path_seeds or []),
     ]
     if extra_seeds:
         scan_log.add(
             "crawl",
             f"Also starting from {len(extra_seeds)} live subdomain(s) found by recon: "
             f"{', '.join(extra_seeds)} (they share the page budget).",
+            persona="Logged-out visitor",
+        )
+    if path_seeds:
+        scan_log.add(
+            "crawl",
+            f"Also starting from {len(path_seeds)} page(s) found by directory brute force: "
+            f"{', '.join(path_seeds)} (they share the page budget).",
             persona="Logged-out visitor",
         )
     scan_log.add(
@@ -493,6 +503,7 @@ async def _run_passive(
     settings: Settings,
     redis_client: Redis,
     scan_log: ScanLog | NullScanLog = NULL_LOG,
+    skip_fingerprints: set[str] | None = None,
 ) -> tuple[PassiveStats, list[Finding], list[TranscriptRecord]]:
     scope_guard = build_scope_guard(target, scope_rules)
     engine = build_http_engine(
@@ -513,6 +524,7 @@ async def _run_passive(
             http_engine=engine,
             scope_guard=scope_guard,
             log=scan_log,
+            skip_fingerprints=skip_fingerprints,
         )
     finally:
         await engine.aclose()
@@ -520,13 +532,14 @@ async def _run_passive(
 
 async def _run_active_tools(
     session: AsyncSession, scan: Scan, scan_log: ScanLog | NullScanLog, watch: CancelWatch
-) -> None:
-    """Active tools (directory brute force, port scanning), inside RECON.
+) -> set[str]:
+    """The active tools this scan may run (directory brute force, port scanning),
+    inside RECON.
 
     The authorisation check is the gate: a tool runs only when this scan's
-    authorisation record (a named, signed-in user) covers it. This build has no
-    active tool implemented yet (scan_options.IMPLEMENTED_ACTIVE_TOOLS), so what
-    is authorised is reported as not run, never silently dropped."""
+    authorisation record (a named, signed-in user) covers it. Returns the
+    authorised set. A tool that is authorised but not implemented in this
+    version (port scanning) is reported as not run, never silently dropped."""
     authorised = await authorised_tools(session, scan, scan_log)
     for tool in scan_options_mod.ACTIVE_TOOL_KEYS:
         if tool not in authorised:
@@ -538,6 +551,98 @@ async def _run_active_tools(
             scan_log.add("scan", note, level="warn")
             scan.is_degraded = True
             scan.degraded_reasons = [*scan.degraded_reasons, note]
+    return authorised
+
+
+async def _recover_session(session: AsyncSession, scan_id: uuid.UUID, target_id: uuid.UUID) -> None:
+    """After a step crashed. An ordinary bug leaves the session usable. A failed
+    flush leaves it needing a rollback, which expires every loaded object; the
+    scan, its phases and the target are loaded again so the run can go on."""
+    if session.is_active:
+        return
+    await session.rollback()
+    await session.get(Scan, scan_id, options=[selectinload(Scan.phases)], populate_existing=True)
+    await session.get(Target, target_id, populate_existing=True)
+
+
+# Pages found by directory brute force that the crawl also starts from.
+MAX_PATH_SEEDS = 20
+
+
+def _in_scope_path_seeds(stats: DirStats | None, scope_guard) -> list[str]:
+    """The step's crawl seeds, re-checked against the scope rules here (the crawl
+    is the last place a stray URL could slip through) and capped."""
+    if stats is None:
+        return []
+    seeds: list[str] = []
+    for url in stats.path_seeds:
+        if url not in seeds and scope_guard.evaluate(method="GET", url=url).allowed:
+            seeds.append(url)
+    return seeds[:MAX_PATH_SEEDS]
+
+
+async def _run_dir_bruteforce_step(
+    session: AsyncSession,
+    *,
+    scan: Scan,
+    target: Target,
+    scope_rules: list[ScopeRule],
+    recon_result,
+    recon_profile: str,
+    speed_rps: float,
+    seq: int,
+    settings: Settings,
+    scan_log: ScanLog | NullScanLog,
+    watch: CancelWatch,
+) -> DirStats | None:
+    """Directory brute force on the hosts recon found. A bug in the step costs
+    the step, never the scan (a cancel still ends the scan)."""
+    # Ids first: after a failed flush every loaded object is expired.
+    scan_id, target_id = scan.id, target.id
+    scope_guard = build_scope_guard(target, scope_rules)
+    redis_client: Redis = Redis.from_url(settings.redis_url)
+    engine = build_http_engine(
+        scope_guard=scope_guard,
+        redis_client=redis_client,
+        settings=settings,
+        target_id=str(target_id),
+        scan_id=str(scan_id),
+        requests_per_second=speed_rps,
+    )
+    try:
+        return await run_dir_bruteforce(
+            session,
+            scan,
+            target,
+            recon_result,
+            scope_guard,
+            engine,
+            recon_profile,
+            speed_rps,
+            watch,
+            scan_log,
+            seq,
+            authorised_by=await authorising_user(session, scan),
+            wordlist_name=scan_options_mod.resolve_wordlist(scan.options),
+            allow_private=settings.allow_private_addresses,
+        )
+    except ScanCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 — a broken tool step must not end the scan
+        log.error("scan_runner.dir_bruteforce_crashed", scan_id=str(scan_id), exc_info=True)
+        await _recover_session(session, scan_id, target_id)
+        note = (
+            "Directory brute force crashed and was skipped: "
+            f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"
+        )
+        scan_log.add("dir_bruteforce", note, level="error")
+        scan.is_degraded = True
+        scan.degraded_reasons = [*scan.degraded_reasons, note]
+        return None
+    finally:
+        await engine.aclose()
+        with contextlib.suppress(Exception):
+            await redis_client.aclose()
 
 
 async def _first_invalid_regex_rule(
@@ -711,11 +816,32 @@ async def _run_scan(scan_id: str, scan_log: ScanLog, watch: CancelWatch) -> None
         session.add_all(
             recon_adapter.tool_run_records(scan.id, recon_result.tool_runs, phase="recon")
         )
-        await _run_active_tools(session, scan, scan_log, watch)
+        # Commit what recon found before the active tools start: a bug in one of
+        # them can then roll back its own work without taking recon's rows along.
+        await session.commit()
+        authorised = await _run_active_tools(session, scan, scan_log, watch)
+        dir_stats: DirStats | None = None
+        if "dir_bruteforce" in authorised and "dir_bruteforce" in (
+            scan_options_mod.IMPLEMENTED_ACTIVE_TOOLS
+        ):
+            dir_stats = await _run_dir_bruteforce_step(
+                session,
+                scan=scan,
+                target=target,
+                scope_rules=scope_rules,
+                recon_result=recon_result,
+                recon_profile=recon_profile,
+                speed_rps=speed_rps,
+                seq=len(recon_result.tool_runs) + 1,
+                settings=get_settings(),
+                scan_log=scan_log,
+                watch=watch,
+            )
         extra_seeds = recon_adapter.extra_crawl_seeds(
             recon_result, root_domain=target.root_domain, scope_guard=recon_guard
         )
         recon_root_url = recon_adapter.crawl_root_url(recon_result, root_domain=target.root_domain)
+        path_seeds = _in_scope_path_seeds(dir_stats, recon_guard)
 
         await _finish_phase(
             session,
@@ -731,6 +857,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog, watch: CancelWatch) -> None
                 "tool_availability": recon_result.tool_availability,
                 "wildcard_dns_suspected": recon_result.wildcard_dns_suspected,
                 "notes": recon_result.notes,
+                **({"dir_bruteforce": dir_stats.as_dict()} if dir_stats is not None else {}),
             },
         )
         if recon_result.degraded:
@@ -878,6 +1005,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog, watch: CancelWatch) -> None
                             options=scan.options,
                             scan_log=scan_log,
                             extra_seeds=extra_seeds,
+                            path_seeds=path_seeds,
                         ),
                         watch,
                     )
@@ -949,6 +1077,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog, watch: CancelWatch) -> None
                 settings=settings,
                 redis_client=redis_client,
                 scan_log=scan_log,
+                skip_fingerprints=dir_stats.confirmed_fingerprints if dir_stats else None,
             )
         except Exception as exc:  # noqa: BLE001 — passive checks must never fail the scan
             log.error("scan_runner.passive_checks_crashed", scan_id=scan_id, exc_info=True)
@@ -1061,6 +1190,8 @@ async def _run_scan(scan_id: str, scan_log: ScanLog, watch: CancelWatch) -> None
             scan.degraded_reasons = [*scan.degraded_reasons, note]
         await session.commit()
 
+        dir_confirmed = dir_stats.confirmed if dir_stats else 0
+
         # --- Phase: VERIFYING ---
         # Verification already ran candidate-by-candidate inside
         # _run_access_control (Phase 9 is check-agnostic, and each check
@@ -1077,9 +1208,11 @@ async def _run_scan(scan_id: str, scan_log: ScanLog, watch: CancelWatch) -> None
             status=PhaseStatus.COMPLETED,
             stats={
                 "candidates_verified": access_control_stats.candidates_found
-                + (passive_stats.candidates if passive_stats else 0),
+                + (passive_stats.candidates if passive_stats else 0)
+                + dir_confirmed,
                 "confirmed": access_control_stats.confirmed
-                + (passive_stats.confirmed if passive_stats else 0),
+                + (passive_stats.confirmed if passive_stats else 0)
+                + dir_confirmed,
                 "probable": access_control_stats.probable
                 + (passive_stats.probable if passive_stats else 0),
             },
@@ -1100,7 +1233,7 @@ async def _run_scan(scan_id: str, scan_log: ScanLog, watch: CancelWatch) -> None
             session,
             phase,
             status=PhaseStatus.COMPLETED,
-            stats={"findings_triaged": len(findings) + len(passive_findings)},
+            stats={"findings_triaged": len(findings) + len(passive_findings) + dir_confirmed},
         )
         await session.commit()
 
@@ -1138,12 +1271,14 @@ async def _run_scan(scan_id: str, scan_log: ScanLog, watch: CancelWatch) -> None
         scan.finished_at = datetime.now(UTC)
         await session.commit()
 
-        confirmed_total = access_control_stats.confirmed + (
-            passive_stats.confirmed if passive_stats else 0
+        confirmed_total = (
+            access_control_stats.confirmed
+            + (passive_stats.confirmed if passive_stats else 0)
+            + dir_confirmed
         )
         scan_log.add(
             "scan",
-            f"Scan complete: {len(findings) + len(passive_findings)} finding(s) "
+            f"Scan complete: {len(findings) + len(passive_findings) + dir_confirmed} finding(s) "
             f"({confirmed_total} confirmed by re-checking); "
             f"{total_created} endpoint(s) recorded; "
             + (
@@ -1159,7 +1294,8 @@ async def _run_scan(scan_id: str, scan_log: ScanLog, watch: CancelWatch) -> None
             personas_crawled=len(surfaces),
             endpoints_created=total_created,
             findings_confirmed=access_control_stats.confirmed
-            + (passive_stats.confirmed if passive_stats else 0),
+            + (passive_stats.confirmed if passive_stats else 0)
+            + dir_confirmed,
             findings_probable=access_control_stats.probable
             + (passive_stats.probable if passive_stats else 0),
             report_id=str(report_row.id),

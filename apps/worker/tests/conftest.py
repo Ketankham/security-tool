@@ -71,6 +71,34 @@ _multi_tenant_app_module = _load_module(
 multi_tenant_app = _multi_tenant_app_module.app
 
 
+_local_site_module = _load_module(
+    "sentinel_worker_test_fixture_local_site",
+    Path(__file__).parent / "fixtures" / "local_site.py",
+)
+
+
+@pytest.fixture
+def make_site():
+    """``make_site(routes=None, decide=None)`` starts a LocalSite on 127.0.0.1
+    and stops every one it started at the end of the test."""
+    started = []
+
+    def make(routes=None, decide=None):
+        site = _local_site_module.LocalSite(routes, decide).start()
+        started.append(site)
+        return site
+
+    yield make
+    for site in started:
+        site.stop()
+
+
+_dir_support_module = _load_module(
+    "sentinel_worker_test_fixture_dir_support",
+    Path(__file__).parent / "fixtures" / "dir_support.py",
+)
+
+
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))

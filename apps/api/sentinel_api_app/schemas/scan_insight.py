@@ -75,3 +75,33 @@ class ScanAssetOut(BaseModel):
     tech: list[str]
     http_probes: list[dict]
     endpoints: int
+
+
+class DiscoveredPathOut(BaseModel):
+    """One path found by directory/file brute force. Only names, status, size
+    and type: a file's body is never stored (it may hold secrets)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    scan_id: UUID
+    tool_run_id: UUID | None
+    origin: str
+    path: str
+    url: str
+    method: str
+    status_code: int
+    content_length: int | None
+    words: int | None
+    lines: int | None
+    content_type: str | None
+    redirect_location: str | None
+    # config | backup | vcs | admin | api | common
+    category: str
+    wordlist: str
+    # confirmed | not_confirmed | found
+    verdict: str
+    rule_id: str | None
+    finding_id: UUID | None
+    note: str | None
+    crawl_seed: bool

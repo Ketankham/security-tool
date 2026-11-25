@@ -103,7 +103,7 @@ export function ReconPanel({ scanId, running }: { scanId: string; running: boole
     );
   }
 
-  const download = (run: ToolRun, stream: "stdout" | "stderr") => {
+  const download = (run: ToolRun, stream: "stdout" | "stderr" | "extra") => {
     setDownloadError(null);
     downloadToolOutput(scanId, run, stream).catch((e) =>
       setDownloadError(e instanceof ApiError ? e.detail : String(e)),
@@ -266,6 +266,16 @@ export function ReconPanel({ scanId, running }: { scanId: string; running: boole
               </div>
             );
           })}
+          {(r.extra_output_chars ?? 0) > 0 && (
+            <div style={{ marginTop: 8, display: "flex", gap: 10, alignItems: "center" }}>
+              <span className="hint">
+                {(r.extra_output_label || "Extra output")} — {(r.extra_output_chars ?? 0).toLocaleString()} characters
+              </span>
+              <button type="button" className="btn-sm" onClick={() => download(r, "extra")}>
+                Download {r.extra_output_label || "extra output"}
+              </button>
+            </div>
+          )}
         </details>
       ))}
     </div>
