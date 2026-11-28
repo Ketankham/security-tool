@@ -3,30 +3,27 @@
 LICENCE EXCEPTION (read before changing anything here)
 ------------------------------------------------------
 nmap is NOT MIT/permissive: it is under the Nmap Public Source License (NPSL),
-which ADR-0002 does not permit for the tools this project adopts. It is
-therefore NOT installed in the worker image and NOT listed in
-infra/tools-manifest.json. This wrapper is complete and tested so the feature
-can be switched on later, but until then ``is_available()`` is False in
-production, the worker finds no ``nmap`` on PATH, and the ports step reports
-naabu-only results with service names guessed from port numbers
-(sentinel_recon.port_guess), marked unverified.
+which ADR-0002 does not permit by default. It is installed in the worker image
+under a written, recorded exception (docs/adr/0002-build-vs-adopt-open-source.md,
+"Exceptions"; infra/tools-manifest.json, entry "nmap"): approved by the project
+owner on 2026-11-28 for INTERNAL use in the hosted worker, including our own
+team testing clients' applications. No legal review was obtained.
 
-The exception that would apply if the owner approves it, and the conditions
-that keep it small:
+The conditions that keep the exception small (do not widen them here):
 
 - Full recon profile only (the Light profile never calls this module);
 - the hosted worker only: nmap is never bundled into, or distributed with,
-  anything we ship to a client;
+  anything we ship to a client, and clients do not log into Sentinel;
 - reached only through this module, so it stays swappable for another
   service-detection tool without touching the worker;
 - it runs as a separate process, never linked.
 
-To enable it later: after the owner's WRITTEN legal sign-off on running nmap
-under the NPSL in the hosted worker, add the apt install line (pinned
-version) to infra/docker/Dockerfile.worker and a manifest entry with
-``"kind": "apt"``, ``"licence": "NPSL"`` and a non-empty ``"exception"``
-note, and extend tools_manifest_check.py to understand apt entries. Do not do
-any of that without the sign-off.
+Re-examine the exception (OEM licence, legal opinion, or drop nmap) BEFORE
+clients are given access to Sentinel or Sentinel is distributed or sold.
+
+If the binary is missing (``is_available()`` is False, e.g. a local test
+machine), the ports step reports naabu-only results with service names guessed
+from port numbers (sentinel_recon.port_guess), marked unverified.
 
 What nmap is deliberately *not* allowed to do here, and why:
 

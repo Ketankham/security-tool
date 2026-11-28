@@ -24,9 +24,9 @@
 #             authorisation record). Connect scan only, so it needs no root and no
 #             libpcap; it is dynamically linked to libc only, which the Debian runtime
 #             image below provides.
-#   nmap is deliberately NOT installed: its licence (NPSL) is outside ADR-0002 and needs
-#   the owner's written sign-off first. sentinel_recon/nmap_wrapper.py is built and
-#   tested, finds no binary on PATH, and the ports step falls back to naabu-only results.
+#   nmap (NPSL) is installed from the Debian package further down, not built here: an
+#   approved exception to ADR-0002 (internal use only, Full profile only, never
+#   distributed), listed in the manifest with who approved it and when.
 FROM golang:1.27-bookworm AS recon-tools
 ENV CGO_ENABLED=0 GOBIN=/out GOFLAGS=-trimpath
 RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@v2.17.0 \
@@ -48,6 +48,17 @@ FROM python:3.11-slim AS base
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# nmap: service and version detection on the ports naabu found open (Full recon
+# profile only; sentinel_recon/nmap_wrapper.py). Its licence (NPSL) is an
+# approved, recorded exception to ADR-0002: internal use in this hosted worker,
+# including testing clients' applications by our own team; never distributed.
+# Installed from the distro (the version follows the Debian release of the base
+# image and is recorded in every tool run). `nmap --version` fails the build if
+# the package is broken.
+RUN apt-get update && apt-get install -y --no-install-recommends nmap \
+    && rm -rf /var/lib/apt/lists/* \
+    && nmap --version
 
 COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /uvx /usr/local/bin/
 
