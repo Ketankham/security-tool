@@ -1,6 +1,12 @@
 {
-  "_about": "External binaries the worker image installs (infra/docker/Dockerfile.worker). Every `go install` there must be listed here with the same version and a permitted licence; infra/scripts/tools_manifest_check.py enforces it in CI. ADR-0002: adopt MIT/permissive tools as separate processes, never GPL/AGPL.",
-  "permitted_licences": ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC"],
+  "_about": "External binaries the worker image installs (infra/docker/Dockerfile.worker). Every `go install` there, and every listed apt package, must be listed here (Go entries with the same version) with a permitted licence or a recorded, attributed exception; infra/scripts/tools_manifest_check.py enforces it in CI. ADR-0002: adopt MIT/permissive tools as separate processes, never GPL/AGPL.",
+  "permitted_licences": [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC"
+  ],
   "tools": [
     {
       "name": "subfinder",
@@ -46,6 +52,19 @@
       "source": "https://github.com/projectdiscovery/naabu",
       "installed_as": "naabu",
       "used_for": "Port scan (active; needs authorisation)"
+    },
+    {
+      "name": "nmap",
+      "kind": "apt",
+      "package": "nmap",
+      "version": "Debian package of the worker base image (the exact version is recorded in every tool run)",
+      "licence": "NPSL",
+      "source": "https://nmap.org",
+      "installed_as": "nmap",
+      "used_for": "Service and version detection on the ports naabu found open (active; Full recon profile only; needs authorisation)",
+      "exception": "Approved exception to ADR-0002 (see its Exceptions section). Used only inside the hosted worker, only on the Full profile, only through sentinel_recon/nmap_wrapper.py (swappable), as a separate process, and never distributed or bundled into anything shipped to a client. Scope of the approval: internal use, including our own team testing clients' applications; clients do not log into Sentinel. No legal review was obtained. Re-examine before clients get access to Sentinel or Sentinel is distributed or sold.",
+      "approved_by": "Ketan (project owner)",
+      "approved_on": "2026-11-28"
     }
   ]
 }

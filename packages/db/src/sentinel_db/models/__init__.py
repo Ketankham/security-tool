@@ -7,6 +7,7 @@ from .discovered_path import DiscoveredPath
 from .finding import Evidence, Finding, Verification
 from .organization import Organization, User
 from .persona import Credential, Persona
+from .port_service import PortService
 from .report import Report
 from .scan import Scan, ScanPhase, ScanPolicy
 from .scan_authorisation import ScanAuthorisation
@@ -30,6 +31,7 @@ __all__ = [
     "ScanAuthorisation",
     "ToolRunRecord",
     "DiscoveredPath",
+    "PortService",
     "Asset",
     "Endpoint",
     "Parameter",

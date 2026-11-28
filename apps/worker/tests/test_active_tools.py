@@ -186,10 +186,13 @@ class _NoCancel:
         return None
 
 
-async def test_runner_says_not_implemented_for_authorised_tools_this_version_lacks(db_engine):
-    """Directory brute force is implemented; port scanning is not (yet): it is
-    reported as not run, never silently dropped, and the runner still gets the
-    whole authorised set back."""
+async def test_runner_says_not_implemented_for_authorised_tools_this_version_lacks(
+    db_engine, monkeypatch
+):
+    """The generic path for a tool the build does not list (here: this build is
+    pretended to list only directory brute force): it is reported as not run,
+    never silently dropped, and the runner still gets the whole authorised set."""
+    monkeypatch.setattr("sentinel_core.scan_options.IMPLEMENTED_ACTIVE_TOOLS", ("dir_bruteforce",))
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     log = RecordingLog()
     async with factory() as session:
@@ -212,7 +215,8 @@ async def test_runner_says_not_implemented_for_authorised_tools_this_version_lac
         ]
 
 
-async def test_runner_says_not_implemented_for_all_ports_too(db_engine):
+async def test_runner_says_not_implemented_for_all_ports_too(db_engine, monkeypatch):
+    monkeypatch.setattr("sentinel_core.scan_options.IMPLEMENTED_ACTIVE_TOOLS", ("dir_bruteforce",))
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     log = RecordingLog()
     async with factory() as session:
@@ -225,6 +229,22 @@ async def test_runner_says_not_implemented_for_all_ports_too(db_engine):
             in log.messages
         )
         assert len(scan.degraded_reasons) == 2
+
+
+async def test_nothing_is_reported_as_not_implemented_with_this_builds_own_tool_list(db_engine):
+    """Directory brute force, port scanning and all ports are all implemented."""
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    log = RecordingLog()
+    async with factory() as session:
+        scan, target = await _scan(
+            session, {"dir_bruteforce": True, "port_scan": True, "all_ports": True}
+        )
+        session.add(_record(scan, target, all_ports_confirmed=True))
+        await session.flush()
+        authorised = await _run_active_tools(session, scan, log, _NoCancel())
+        assert authorised == {"dir_bruteforce", "port_scan", "all_ports"}
+        assert not any("not implemented" in m for m in log.messages)
+        assert scan.is_degraded is False and scan.degraded_reasons == []
 
 
 async def test_runner_does_not_claim_not_implemented_when_authorisation_failed_first(db_engine):

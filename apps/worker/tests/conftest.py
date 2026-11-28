@@ -99,6 +99,12 @@ _dir_support_module = _load_module(
 )
 
 
+_port_support_module = _load_module(
+    "sentinel_worker_test_fixture_port_support",
+    Path(__file__).parent / "fixtures" / "port_support.py",
+)
+
+
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))

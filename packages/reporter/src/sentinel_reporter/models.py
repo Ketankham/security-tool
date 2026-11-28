@@ -111,6 +111,40 @@ class ReportPath:
 
 
 @dataclass(frozen=True, slots=True)
+class ReportPort:
+    """An open TCP port found by port scanning. ``confidence`` is "detected"
+    (nmap named the service) or "port_guess" (named from the port number alone,
+    unverified). nmap script output is deliberately NOT part of the report."""
+
+    ip: str
+    port: int
+    state: str
+    confidence: str
+    found_by: str
+    protocol: str = "tcp"
+    hosts: list[str] = field(default_factory=list)
+    service: str | None = None
+    product: str | None = None
+    version: str | None = None
+    cdn: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "ip": self.ip,
+            "hosts": list(self.hosts),
+            "port": self.port,
+            "protocol": self.protocol,
+            "state": self.state,
+            "service": self.service,
+            "product": self.product,
+            "version": self.version,
+            "confidence": self.confidence,
+            "found_by": self.found_by,
+            "cdn": self.cdn,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ReportAuthorisation:
     """Who confirmed they were authorised to run the scan's active tools."""
 
@@ -154,6 +188,8 @@ class ScanReport:
     # Directory brute force results, and the authorisation behind the scan's
     # active tools. Both are empty/None for a passive scan.
     paths: list[ReportPath] = field(default_factory=list)
+    # Port scanning results (open ports and services); empty without that tool.
+    ports: list[ReportPort] = field(default_factory=list)
     authorisation: ReportAuthorisation | None = None
 
     @property
@@ -162,6 +198,11 @@ class ScanReport:
         if self.paths:
             summary["paths_found"] = len(self.paths)
             summary["paths_confirmed"] = sum(1 for p in self.paths if p.verdict == "confirmed")
+        if self.ports:
+            open_ports = [p for p in self.ports if p.state == "open"]
+            summary["open_ports"] = len(open_ports)
+            summary["ips_with_open_ports"] = len({p.ip for p in open_ports})
+            summary["ports_unverified"] = sum(1 for p in open_ports if p.confidence != "detected")
         return summary
 
     def _base_summary(self) -> dict:
@@ -187,6 +228,7 @@ class ScanReport:
             "endpoints": [e.to_dict() for e in self.endpoints],
             "findings": [f.to_dict() for f in self.findings],
             "paths": [p.to_dict() for p in self.paths],
+            "ports": [p.to_dict() for p in self.ports],
             "authorisation": self.authorisation.to_dict() if self.authorisation else None,
             "is_degraded": self.is_degraded,
             "degraded_reasons": list(self.degraded_reasons),

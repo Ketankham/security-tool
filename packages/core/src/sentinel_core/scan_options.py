@@ -59,9 +59,8 @@ def resolve_recon_profile(options: dict | None) -> ReconProfile:
 
 ACTIVE_TOOL_KEYS: tuple[str, ...] = ("dir_bruteforce", "port_scan", "all_ports")
 # The tools this build can actually run. A request for any other is refused by
-# the API ("... is not available yet.") and skipped by the worker. A later
-# release adds "port_scan" and "all_ports".
-IMPLEMENTED_ACTIVE_TOOLS: tuple[str, ...] = ("dir_bruteforce",)
+# the API ("... is not available yet.") and skipped by the worker.
+IMPLEMENTED_ACTIVE_TOOLS: tuple[str, ...] = ("dir_bruteforce", "port_scan", "all_ports")
 
 ACTIVE_TOOL_LABELS: dict[str, str] = {
     "dir_bruteforce": "Directory brute force",

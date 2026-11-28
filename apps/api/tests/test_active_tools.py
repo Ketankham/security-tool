@@ -1,9 +1,9 @@
 """Active tools at the API: validation, the authorisation record, retry, cancel.
 
-Only directory brute force is implemented in this build
-(IMPLEMENTED_ACTIVE_TOOLS); port scanning and all-ports are still refused as
-"not available yet". The tests that exercise the port rules switch all three on
-for the duration of the test; the first tests show what a real caller sees today.
+All three active tools are implemented in this build
+(IMPLEMENTED_ACTIVE_TOOLS). The "not available yet" path is still there for a
+tool the build does not list, and is exercised by switching a tool off with
+the ``only_directory_tools`` fixture.
 """
 
 from __future__ import annotations
@@ -57,6 +57,12 @@ def all_tools(monkeypatch):
 
 
 @pytest.fixture
+def only_directory_tools(monkeypatch):
+    """A build that lists only directory brute force: port tools are 'not available yet'."""
+    monkeypatch.setattr("sentinel_core.scan_options.IMPLEMENTED_ACTIVE_TOOLS", ("dir_bruteforce",))
+
+
+@pytest.fixture
 async def redis_db():
     client = aioredis.from_url(REDIS_URL)
     try:
@@ -100,7 +106,7 @@ async def count(db_engine, model) -> int:
         return (await session.execute(select(func.count()).select_from(model))).scalar_one()
 
 
-# --- Today's behaviour: only directory brute force is available ----------------
+# --- A tool the build does not list is refused ----------------------------------
 
 
 @pytest.mark.parametrize(
@@ -110,8 +116,8 @@ async def count(db_engine, model) -> int:
         ("all_ports", "All 65,535 ports"),
     ],
 )
-async def test_any_real_tool_request_is_refused_as_not_available_yet(
-    client, no_dispatch, flag, label
+async def test_a_tool_the_build_does_not_list_is_refused_as_not_available_yet(
+    client, no_dispatch, only_directory_tools, flag, label
 ):
     headers, target = await make_target(client, f"na-{flag.replace('_', '-')}")
     resp = await start(
@@ -124,7 +130,9 @@ async def test_any_real_tool_request_is_refused_as_not_available_yet(
     assert resp.json()["detail"] == f"{label} is not available yet."
 
 
-async def test_not_available_is_reported_before_the_missing_identity(client, no_dispatch):
+async def test_not_available_is_reported_before_the_missing_identity(
+    client, no_dispatch, only_directory_tools
+):
     headers, target = await make_target(client, "na-before-identity")
     resp = await start(client, target, headers, port_scan=True)  # no identity, no confirmation
     assert resp.status_code == 422
@@ -147,6 +155,97 @@ async def test_directory_brute_force_is_accepted_with_an_identity_and_the_confir
     assert auth["tools"] == ["dir_bruteforce"]
     assert auth["username"] == "alice"
     assert await count(db_engine, ScanAuthorisation) == 1
+
+
+async def test_port_scanning_is_accepted_with_the_builds_own_tool_list(
+    client, db_engine, no_dispatch
+):
+    """No monkeypatching: port_scan and all_ports are in IMPLEMENTED_ACTIVE_TOOLS."""
+    headers, target = await make_target(client, "ports-accepted")
+    resp = await start(
+        client, target, {**headers, **who()}, port_scan=True, authorisation=confirm()
+    )
+    assert resp.status_code == 201, resp.text
+    scan = resp.json()
+    assert scan["options"]["port_scan"] is True and scan["options"]["all_ports"] is False
+    rec = (await client.get(f"/scans/{scan['id']}/authorisation", headers=headers)).json()
+    assert rec["tools"] == ["port_scan"] and rec["all_ports_confirmed"] is False
+
+    both = await start(
+        client,
+        target,
+        {**headers, **who()},
+        port_scan=True,
+        all_ports=True,
+        recon_profile="full",
+        authorisation=confirm(all_ports_confirmed=True),
+    )
+    assert both.status_code == 201, both.text
+    rec = (await client.get(f"/scans/{both.json()['id']}/authorisation", headers=headers)).json()
+    assert rec["tools"] == ["port_scan", "all_ports"] and rec["all_ports_confirmed"] is True
+    assert await count(db_engine, ScanAuthorisation) == 2
+
+
+@pytest.mark.parametrize(
+    ("body", "status_code", "detail"),
+    [
+        (
+            {"all_ports": True, "recon_profile": "full"},
+            422,
+            "All 65,535 ports needs port scanning switched on.",
+        ),
+        (
+            {"port_scan": True, "all_ports": True},
+            422,
+            "All 65,535 ports is only available on the Full recon profile.",
+        ),
+        (
+            {"port_scan": True},
+            403,
+            "Active tools need a signed-in user, and this request has no verified identity. "
+            "Open Sentinel through its sign-in page.",
+        ),
+    ],
+)
+async def test_the_port_rules_hold_with_the_builds_own_tool_list(
+    client, no_dispatch, body, status_code, detail
+):
+    headers, target = await make_target(client, f"ports-rule-{status_code}-{len(body)}")
+    identity = who() if status_code != 403 else {}
+    resp = await start(
+        client,
+        target,
+        {**headers, **identity},
+        authorisation=confirm(all_ports_confirmed=True),
+        **body,
+    )
+    assert resp.status_code == status_code
+    assert resp.json()["detail"] == detail
+
+
+async def test_port_scanning_needs_the_confirmation_and_all_ports_its_own(client, no_dispatch):
+    headers, target = await make_target(client, "ports-confirm")
+    missing = await start(client, target, {**headers, **who()}, port_scan=True)
+    assert missing.status_code == 422
+    stale = await start(
+        client,
+        target,
+        {**headers, **who()},
+        port_scan=True,
+        authorisation=confirm(statement_version="0"),
+    )
+    assert stale.status_code == 409
+    own = await start(
+        client,
+        target,
+        {**headers, **who()},
+        port_scan=True,
+        all_ports=True,
+        recon_profile="full",
+        authorisation=confirm(all_ports_confirmed=False),
+    )
+    assert own.status_code == 422
+    assert own.json()["detail"] == "Scanning all 65,535 ports needs its own confirmation."
 
 
 async def test_directory_brute_force_still_needs_the_identity_and_the_confirmation(

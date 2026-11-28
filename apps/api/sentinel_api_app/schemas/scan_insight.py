@@ -62,6 +62,10 @@ class ToolRunOut(BaseModel):
     stderr_truncated: bool
     stdout_preview: str
     stderr_preview: str
+    # A second output the tool left (nmap's normal-format report): its size and
+    # what to call it. Download it with ?stream=extra.
+    extra_output_chars: int = 0
+    extra_output_label: str | None = None
 
 
 class ScanAssetOut(BaseModel):
@@ -105,3 +109,31 @@ class DiscoveredPathOut(BaseModel):
     finding_id: UUID | None
     note: str | None
     crawl_seed: bool
+
+
+class PortServiceOut(BaseModel):
+    """One open TCP port on one address. ``confidence`` is "detected" when nmap
+    named the service by talking to it and "port_guess" when the name comes from
+    the port number alone (unverified). ``scripts`` is nmap script output
+    (id to text), already redacted; it is not part of the report."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    scan_id: UUID
+    tool_run_id: UUID | None
+    ip: str
+    hosts: list[str]
+    port: int
+    protocol: str
+    state: str
+    service: str | None
+    product: str | None
+    version: str | None
+    extra_info: str | None
+    # detected | port_guess
+    confidence: str
+    scripts: dict[str, str]
+    cdn: str | None
+    # naabu | nmap
+    found_by: str

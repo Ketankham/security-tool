@@ -6,6 +6,7 @@ from sentinel_reporter import (
     ReportEndpoint,
     ReportFinding,
     ReportPath,
+    ReportPort,
     ScanReport,
 )
 
@@ -157,3 +158,56 @@ def test_the_authorisation_is_part_of_the_report():
         "statement_text": "I confirm Acme Ltd has authorised ...",
         "target_environment": "production",
     }
+
+
+def _port(**overrides) -> ReportPort:
+    values = dict(
+        ip="203.0.113.7",
+        hosts=["acme.test"],
+        port=443,
+        state="open",
+        confidence="detected",
+        found_by="nmap",
+        service="https",
+        product="nginx",
+        version="1.24.0",
+    )
+    values.update(overrides)
+    return ReportPort(**values)
+
+
+def test_a_report_without_ports_keeps_its_old_shape():
+    body = _make_report().to_dict()
+    assert body["ports"] == []
+    for key in ("open_ports", "ips_with_open_ports", "ports_unverified"):
+        assert key not in body["summary"]
+
+
+def test_ports_are_listed_and_counted_in_the_summary():
+    report = _make_report(
+        ports=[
+            _port(),
+            _port(port=22, service="ssh", product=None, version=None, confidence="port_guess"),
+            _port(ip="203.0.113.8", port=80, confidence="port_guess", found_by="naabu"),
+            _port(port=8443, state="filtered"),
+        ]
+    )
+    body = report.to_dict()
+    assert body["summary"]["open_ports"] == 3
+    assert body["summary"]["ips_with_open_ports"] == 2
+    assert body["summary"]["ports_unverified"] == 2
+    assert [(p["ip"], p["port"]) for p in body["ports"]][:2] == [
+        ("203.0.113.7", 443),
+        ("203.0.113.7", 22),
+    ]
+    first = body["ports"][0]
+    assert first["product"] == "nginx" and first["confidence"] == "detected"
+    assert set(first) == {
+        "ip", "hosts", "port", "protocol", "state", "service", "product", "version",
+        "confidence", "found_by", "cdn",
+    }  # fmt: skip
+
+
+def test_script_output_has_nowhere_to_go_in_a_report():
+    body = _make_report(ports=[_port()]).to_dict()
+    assert not {"scripts", "script", "output", "extra_info", "banner"} & set(body["ports"][0])

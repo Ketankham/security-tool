@@ -47,6 +47,33 @@
   `license-checker`) fails the build on any GPL/AGPL/unknown-licence dependency. Not a
   one-time audit — a permanent gate.
 
+## Exceptions
+
+An exception is allowed only when it is written down here and recorded in
+`infra/tools-manifest.json` with an `exception` note, `approved_by` and
+`approved_on` (CI's tools-manifest check refuses a non-permitted licence
+without them).
+
+### nmap (Nmap Public Source License), approved 2026-11-28
+
+- **What:** nmap, for service and version detection on the ports `naabu` found open.
+- **Why an exception:** the NPSL is based on GPLv2 with extra terms. It lets end users,
+  including companies, run nmap freely, but does not allow bundling or redistributing it
+  inside a proprietary product (containers, virtual machines and appliances included)
+  without a commercial (OEM) licence.
+- **Approved by:** Ketan (project owner), in conversation on 2026-11-28.
+- **Scope of the approval:** internal use only, in the hosted worker, including our own
+  team testing clients' applications. Clients do not log into Sentinel and nothing
+  containing nmap is shipped to them.
+- **Conditions that keep it small:** Full recon profile only; reached only through
+  `sentinel_recon/nmap_wrapper.py` (swappable for another tool); a separate process, never
+  linked; installed from the distro package in the hosted worker image only.
+- **No legal review was obtained.** This records the owner's decision, not legal advice.
+- **Re-examine before:** clients are given access to Sentinel, Sentinel (or an image
+  containing nmap) is distributed or sold, or the worker image is published. At that point
+  buy an Nmap OEM licence, get a legal opinion, or drop nmap (the ports step falls back to
+  naabu-only results).
+
 ## Consequences
 
 - Ketan's research action item resolves to: *evaluate the ProjectDiscovery suite + Playwright*,
